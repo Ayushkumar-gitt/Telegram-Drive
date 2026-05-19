@@ -12,6 +12,7 @@ export const getTelegramClient = async (
     const session = new StringSession(sessionString)
     client = new TelegramClient(session, apiId, apiHash, {
       connectionRetries: 5,
+      useWSS: true,
     })
   }
   if (!client.connected) {
@@ -30,6 +31,7 @@ export const initTelegramClient = async (
   const session = new StringSession('')
   client = new TelegramClient(session, apiId, apiHash, {
     connectionRetries: 5,
+    useWSS: true,
   })
 
   await client.start({

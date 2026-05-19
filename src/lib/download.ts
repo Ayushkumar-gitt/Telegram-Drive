@@ -24,6 +24,7 @@ export const downloadFileFromTelegram = async (
         }
 
         const buffer = await client.downloadMedia(messages[0], {
+          workers: 4,
           progressCallback: (downloaded: any, total: any) => {
             if (onProgress && total) {
               const chunkProgress = Number(downloaded) / Number(total)
@@ -31,7 +32,7 @@ export const downloadFileFromTelegram = async (
               onProgress(overallProgress)
             }
           }
-        })
+        } as any)
 
         if (!buffer) throw new Error(`Failed to download chunk ${i + 1}`)
         buffers.push(Buffer.from(buffer as ArrayBuffer))
@@ -48,13 +49,14 @@ export const downloadFileFromTelegram = async (
 
       // 2. Download media
       const buffer = await client.downloadMedia(messages[0], {
+        workers: 4,
         progressCallback: (downloaded: any, total: any) => {
           if (onProgress && total) {
             const progress = Number(downloaded) / Number(total)
             onProgress(progress * 100)
           }
         }
-      })
+      } as any)
 
       if (!buffer) {
         throw new Error('Failed to download media buffer')

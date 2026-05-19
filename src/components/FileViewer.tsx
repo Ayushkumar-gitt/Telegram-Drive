@@ -51,7 +51,9 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
           for (const messageId of file.chunkMessageIds) {
             const messages = await client.getMessages(peer, { ids: [messageId] })
             if (messages.length > 0 && messages[0].media) {
-              const buffer = await client.downloadMedia(messages[0])
+              const buffer = await client.downloadMedia(messages[0], {
+                workers: 4
+              } as any)
               if (buffer) buffers.push(Buffer.from(buffer as ArrayBuffer))
             }
           }
@@ -60,7 +62,9 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
           // Fetch the message containing the file
           const messages = await client.getMessages(peer, { ids: [file.messageId] })
           if (messages.length > 0 && messages[0].media) {
-            const buffer = await client.downloadMedia(messages[0])
+            const buffer = await client.downloadMedia(messages[0], {
+              workers: 4
+            } as any)
             if (buffer) totalBuffer = Buffer.from(buffer as ArrayBuffer)
           }
         }
