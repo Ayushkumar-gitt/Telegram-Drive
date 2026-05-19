@@ -17,8 +17,11 @@ export const uploadFileToTelegram = async (
   try {
     if (file.size <= CHUNK_SIZE) {
       // Standard upload for files <= 1.9GB
+
+      // The browser's native File object must be passed directly into the API for sendFile
+      // as GramJS checks `typeof File !== "undefined" && file instanceof File`
       const result = await client.sendFile(channelId, {
-        file: file, // GramJS in browser accepts File directly
+        file: file,
         caption: file.name,
         forceDocument: true,
         workers: 4, // Upload speed optimization: concurrent workers
