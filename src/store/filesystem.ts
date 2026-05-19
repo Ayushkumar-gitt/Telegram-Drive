@@ -78,8 +78,11 @@ export const useFileSystemStore = create<FileSystemState>()(
             const metadataDialog = dialogs.find(d => d.title === SYNC_CHANNEL_NAME)
 
             if (metadataDialog) {
-              channelId = metadataDialog.entity?.id?.toString() || null
-              if (channelId) set({ metadataChannelId: channelId })
+              const id = metadataDialog.entity?.id?.toString() || null
+              if (id) {
+                channelId = id.startsWith('-100') ? id : `-100${id}`
+                set({ metadataChannelId: channelId })
+              }
             } else {
               const result = await client.invoke(
                 new Api.channels.CreateChannel({
@@ -89,7 +92,9 @@ export const useFileSystemStore = create<FileSystemState>()(
                 })
               )
 
-              const newChannelId = (result as any).chats[0].id.toString()
+              // Add -100 prefix for Telegram channels if it doesn't already have it
+              const id = (result as any).chats[0].id.toString()
+              const newChannelId = id.startsWith('-100') ? id : `-100${id}`
               channelId = newChannelId
               set({ metadataChannelId: newChannelId })
             }

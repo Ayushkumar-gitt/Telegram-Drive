@@ -75,12 +75,14 @@ export const Dashboard = () => {
       )
 
       const channel = (result as any).chats[0]
+      const rawId = channel.id.toString()
+      const channelId = rawId.startsWith('-100') ? rawId : `-100${rawId}`
 
       const newFolder: TGFolder = {
         id: uuidv4(),
         name: newFolderName.trim(),
         createdAt: Date.now(),
-        channelId: channel.id.toString(),
+        channelId: channelId,
         accessHash: channel.accessHash.toString()
       }
 
