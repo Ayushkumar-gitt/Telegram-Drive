@@ -52,7 +52,7 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
             const messages = await client.getMessages(peer, { ids: [messageId] })
             if (messages.length > 0 && messages[0].media) {
               const buffer = await client.downloadMedia(messages[0])
-              if (buffer) buffers.push(buffer as Buffer)
+              if (buffer) buffers.push(Buffer.from(buffer as ArrayBuffer))
             }
           }
           if (buffers.length > 0) totalBuffer = Buffer.concat(buffers)
@@ -61,7 +61,7 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
           const messages = await client.getMessages(peer, { ids: [file.messageId] })
           if (messages.length > 0 && messages[0].media) {
             const buffer = await client.downloadMedia(messages[0])
-            if (buffer) totalBuffer = buffer as Buffer
+            if (buffer) totalBuffer = Buffer.from(buffer as ArrayBuffer)
           }
         }
 

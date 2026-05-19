@@ -34,7 +34,7 @@ export const downloadFileFromTelegram = async (
         })
 
         if (!buffer) throw new Error(`Failed to download chunk ${i + 1}`)
-        buffers.push(buffer as Buffer)
+        buffers.push(Buffer.from(buffer as ArrayBuffer))
       }
 
       totalBuffer = Buffer.concat(buffers)
@@ -60,7 +60,7 @@ export const downloadFileFromTelegram = async (
         throw new Error('Failed to download media buffer')
       }
 
-      totalBuffer = buffer as Buffer
+      totalBuffer = Buffer.from(buffer as ArrayBuffer)
     }
 
     // 3. Trigger download in browser

@@ -10,13 +10,13 @@ import {
   Folder as FolderIcon,
   File as FileIcon,
   FileText as PdfIcon,
-  MoreVertical,
   Plus,
   ArrowLeft,
   Search,
   LogOut,
   FolderPlus,
-  Download as DownloadIcon
+  Download as DownloadIcon,
+  Trash2 as TrashIcon
 } from 'lucide-react'
 import { Api } from 'telegram'
 import { v4 as uuidv4 } from 'uuid'
@@ -33,6 +33,8 @@ export const Dashboard = () => {
     files,
     folders,
     addFolder,
+    removeFile,
+    removeFolder,
     syncFromMetadataChannel,
     syncToMetadataChannel
   } = useFileSystemStore()
@@ -113,7 +115,11 @@ export const Dashboard = () => {
       filteredFolders = currentFolderId ? [] : folders
     }
 
-    return [...filteredFolders, ...filteredFiles]
+    // Add a type flag so we don't have to guess based on 'accessHash'
+    const foldersWithType = filteredFolders.map(f => ({ ...f, type: 'folder' }))
+    const filesWithType = filteredFiles.map(f => ({ ...f, type: 'file' }))
+
+    return [...foldersWithType, ...filesWithType]
   }, [files, folders, currentFolderId, searchQuery])
 
   // Virtualizer for high performance grid
@@ -267,15 +273,14 @@ export const Dashboard = () => {
             >
               {virtualizer.getVirtualItems().map((virtualRow) => {
                 const item = items[virtualRow.index]
-                // Both TGFile and TGFolder have channelId. A folder has accessHash (and no mimeType)
-                const isFolder = 'accessHash' in item
+                const isFolder = item.type === 'folder'
 
                 return (
                   <motion.div
                     key={item.id}
                     layoutId={item.id}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
                     style={{
                       position: 'absolute',
                       top: 0,
@@ -327,8 +332,25 @@ export const Dashboard = () => {
                             <DownloadIcon className="w-4 h-4" />
                           </button>
                         )}
-                        <button className="p-2 opacity-0 group-hover:opacity-100 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-all">
-                          <MoreVertical className="w-4 h-4" />
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (!confirm(`Are you sure you want to delete this ${isFolder ? 'folder' : 'file'}?`)) return;
+                            if (isFolder) {
+                              removeFolder(item.id);
+                            } else {
+                              removeFile(item.id);
+                            }
+                            if (sessionString && apiId && apiHash) {
+                              const client = await getTelegramClient(sessionString, apiId, apiHash);
+                              await syncToMetadataChannel(client);
+                            }
+                            toast.success(`${isFolder ? 'Folder' : 'File'} deleted`);
+                          }}
+                          className="p-2 opacity-0 group-hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-900/20 text-red-500 rounded-full transition-all"
+                          title="Delete"
+                        >
+                          <TrashIcon className="w-4 h-4" />
                         </button>
                       </div>
                     </div>

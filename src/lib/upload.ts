@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { type TGFile } from '../store/filesystem'
 import { Buffer } from 'buffer'
 
-const CHUNK_SIZE = 1.9 * 1024 * 1024 * 1024 // 1.9 GB
+const CHUNK_SIZE = 100 * 1024 * 1024 // 100 MB
 
 export const uploadFileToTelegram = async (
   client: TelegramClient,

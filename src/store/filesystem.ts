@@ -13,6 +13,7 @@ export interface TGFile {
   folderId: string | null
   messageId: number
   channelId: string
+  accessHash?: string
   thumbnailMessageId?: number
   isChunked?: boolean
   chunkMessageIds?: number[]
@@ -30,8 +31,9 @@ export interface FileSystemState {
   files: TGFile[]
   folders: TGFolder[]
   metadataChannelId: string | null
+  metadataAccessHash: string | null
 
-  setMetadataChannelId: (id: string) => void
+  setMetadataChannelId: (id: string, accessHash?: string) => void
   addFolder: (folder: TGFolder) => void
   addFile: (file: TGFile) => void
   removeFile: (id: string) => void
@@ -48,8 +50,9 @@ export const useFileSystemStore = create<FileSystemState>()(
       files: [],
       folders: [],
       metadataChannelId: null,
+      metadataAccessHash: null,
 
-      setMetadataChannelId: (id) => set({ metadataChannelId: id }),
+      setMetadataChannelId: (id, accessHash) => set({ metadataChannelId: id, metadataAccessHash: accessHash || null }),
 
       addFolder: (folder) => set((state) => ({
         folders: [...state.folders, folder]
@@ -72,16 +75,21 @@ export const useFileSystemStore = create<FileSystemState>()(
         try {
           const state = get()
           let channelId = state.metadataChannelId
+          let accessHash = state.metadataAccessHash
 
-          if (!channelId) {
+          // Even if we have channelId, we might not have it in the GramJS entity cache on page reload.
+          // By calling getDialogs if we don't have an accessHash, we force GramJS to populate its entity cache.
+          if (!channelId || !accessHash) {
             const dialogs = await client.getDialogs({})
             const metadataDialog = dialogs.find(d => d.title === SYNC_CHANNEL_NAME)
 
-            if (metadataDialog) {
-              const id = metadataDialog.entity?.id?.toString() || null
+            if (metadataDialog && metadataDialog.entity) {
+              const id = metadataDialog.entity.id?.toString() || null
+              const ah = (metadataDialog.entity as any).accessHash?.toString()
               if (id) {
                 channelId = id.startsWith('-100') ? id : `-100${id}`
-                set({ metadataChannelId: channelId })
+                accessHash = ah
+                set({ metadataChannelId: channelId, metadataAccessHash: ah })
               }
             } else {
               const result = await client.invoke(
@@ -92,17 +100,28 @@ export const useFileSystemStore = create<FileSystemState>()(
                 })
               )
 
-              // Add -100 prefix for Telegram channels if it doesn't already have it
-              const id = (result as any).chats[0].id.toString()
+              const chat = (result as any).chats[0]
+              const id = chat.id.toString()
+              const ah = chat.accessHash?.toString()
               const newChannelId = id.startsWith('-100') ? id : `-100${id}`
               channelId = newChannelId
-              set({ metadataChannelId: newChannelId })
+              accessHash = ah
+              set({ metadataChannelId: newChannelId, metadataAccessHash: ah })
             }
           }
 
           if (!channelId) return
 
-          const peer = Number(channelId)
+          let peer: any = Number(channelId)
+          if (accessHash) {
+            // Reconstruct the InputPeerChannel so GramJS doesn't fail on cache miss
+            const BigIntConstructor = (window as any).BigInt || globalThis.BigInt || Number
+            peer = new Api.InputPeerChannel({
+              channelId: BigIntConstructor(channelId.replace('-100', '')) as any,
+              accessHash: BigIntConstructor(accessHash) as any
+            })
+          }
+
           const messages = await client.getMessages(peer, { limit: 1 })
 
           if (messages.length > 0) {
@@ -155,7 +174,14 @@ export const useFileSystemStore = create<FileSystemState>()(
 
           const jsonString = JSON.stringify(stateToSync)
 
-          const peer = Number(state.metadataChannelId)
+          let peer: any = Number(state.metadataChannelId)
+          if (state.metadataAccessHash) {
+            const BigIntConstructor = (window as any).BigInt || globalThis.BigInt || Number
+            peer = new Api.InputPeerChannel({
+              channelId: BigIntConstructor(state.metadataChannelId.replace('-100', '')) as any,
+              accessHash: BigIntConstructor(state.metadataAccessHash) as any
+            })
+          }
           if (jsonString.length > 4000) {
             const buffer = Buffer.from(jsonString, 'utf-8')
             await client.sendFile(peer, {
