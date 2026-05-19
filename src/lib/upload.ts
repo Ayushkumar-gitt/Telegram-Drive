@@ -36,7 +36,12 @@ export const uploadFileToTelegram = async (
       let uploadFile: any = file
       if (typeof window !== 'undefined') {
         const buffer = await file.arrayBuffer()
-        uploadFile = new CustomFile(file.name, file.size, "", Buffer.from(buffer))
+        const nodeBuffer = Buffer.from(buffer)
+        // Passing an empty string for path causes gramjs to throw the buffer error in some environments when parsing `filePath || buffer`.
+        // We explicitly set buffer in the CustomFile.
+        const customFile = new CustomFile(file.name, file.size, "", nodeBuffer)
+        customFile.buffer = nodeBuffer // Force buffer assignment just in case constructor fails to map it.
+        uploadFile = customFile
       }
 
       const result = await client.sendFile(peer, {
@@ -58,6 +63,7 @@ export const uploadFileToTelegram = async (
         folderId,
         messageId: result.id,
         channelId: channelId,
+        accessHash: accessHash || undefined,
         isChunked: false
       }
 
@@ -75,7 +81,10 @@ export const uploadFileToTelegram = async (
         let uploadChunkFile: any = chunkFile
         if (typeof window !== 'undefined') {
           const buffer = await chunkFile.arrayBuffer()
-          uploadChunkFile = new CustomFile(chunkFile.name, chunkFile.size, "", Buffer.from(buffer))
+          const nodeBuffer = Buffer.from(buffer)
+          const customFile = new CustomFile(chunkFile.name, chunkFile.size, "", nodeBuffer)
+          customFile.buffer = nodeBuffer
+          uploadChunkFile = customFile
         }
 
         const result = await client.sendFile(peer, {
@@ -103,6 +112,7 @@ export const uploadFileToTelegram = async (
         folderId,
         messageId: chunkMessageIds[0], // the first part serves as the main reference
         channelId: channelId,
+        accessHash: accessHash || undefined,
         isChunked: true,
         chunkMessageIds: chunkMessageIds
       }

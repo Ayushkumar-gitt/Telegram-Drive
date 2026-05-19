@@ -276,11 +276,8 @@ export const Dashboard = () => {
                 const isFolder = item.type === 'folder'
 
                 return (
-                  <motion.div
-                    key={item.id}
-                    layoutId={item.id}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
+                  <div
+                    key={virtualRow.key}
                     style={{
                       position: 'absolute',
                       top: 0,
@@ -289,8 +286,13 @@ export const Dashboard = () => {
                       height: `${virtualRow.size}px`,
                       transform: `translateY(${virtualRow.start}px)`,
                     }}
-                    className="group"
                   >
+                    <motion.div
+                      layoutId={item.id}
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="group h-full"
+                    >
                     <div
                       onClick={() => isFolder ? setCurrentFolderId(item.id) : setViewingFile(item as TGFile)}
                       className="grid grid-cols-[1fr_120px_150px_40px] gap-4 items-center px-4 h-full border-b border-gray-100 dark:border-gray-800 hover:bg-blue-50 dark:hover:bg-blue-900/20 cursor-pointer transition-colors"
@@ -354,7 +356,8 @@ export const Dashboard = () => {
                         </button>
                       </div>
                     </div>
-                  </motion.div>
+                    </motion.div>
+                  </div>
                 )
               })}
             </div>

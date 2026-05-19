@@ -9,11 +9,8 @@ import { getTelegramClient } from '../lib/telegram'
 import { useAuthStore } from '../store/auth'
 import { Buffer } from 'buffer'
 
-// Load worker locally to avoid third-party requests
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url,
-).toString();
+// Ensure the worker version strictly matches the react-pdf core version
+pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 // Module-level cache to persist blob URLs for the lifetime of the session
 const sessionMediaCache = new Map<string, string>();
