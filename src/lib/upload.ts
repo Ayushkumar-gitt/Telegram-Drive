@@ -1,6 +1,8 @@
 import { TelegramClient } from 'telegram'
+import { CustomFile } from 'telegram/client/uploads'
 import { v4 as uuidv4 } from 'uuid'
 import { type TGFile } from '../store/filesystem'
+import { Buffer } from 'buffer'
 
 const CHUNK_SIZE = 1.9 * 1024 * 1024 * 1024 // 1.9 GB
 
@@ -18,10 +20,16 @@ export const uploadFileToTelegram = async (
     if (file.size <= CHUNK_SIZE) {
       // Standard upload for files <= 1.9GB
 
-      // The browser's native File object must be passed directly into the API for sendFile
-      // as GramJS checks `typeof File !== "undefined" && file instanceof File`
+      // The browser's native File object is sometimes problematic.
+      // But GramJS's `CustomFile` can accept an array buffer.
+      let uploadFile: any = file
+      if (typeof window !== 'undefined') {
+        const buffer = await file.arrayBuffer()
+        uploadFile = new CustomFile(file.name, file.size, "", Buffer.from(buffer))
+      }
+
       const result = await client.sendFile(channelId, {
-        file: file,
+        file: uploadFile,
         caption: file.name,
         forceDocument: true,
         workers: 4, // Upload speed optimization: concurrent workers
@@ -53,9 +61,14 @@ export const uploadFileToTelegram = async (
         const end = Math.min(start + CHUNK_SIZE, file.size)
         const chunkBlob = file.slice(start, end)
         const chunkFile = new File([chunkBlob], `${file.name}.part${i + 1}`)
+        let uploadChunkFile: any = chunkFile
+        if (typeof window !== 'undefined') {
+          const buffer = await chunkFile.arrayBuffer()
+          uploadChunkFile = new CustomFile(chunkFile.name, chunkFile.size, "", Buffer.from(buffer))
+        }
 
         const result = await client.sendFile(channelId, {
-          file: chunkFile,
+          file: uploadChunkFile,
           caption: `${file.name} (Part ${i + 1}/${totalChunks})`,
           forceDocument: true,
           workers: 4,
