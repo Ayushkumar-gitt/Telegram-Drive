@@ -40,7 +40,7 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
 
       setIsLoading(true)
       try {
-        const client = getTelegramClient(sessionString, apiId, apiHash)
+        const client = await getTelegramClient(sessionString, apiId, apiHash)
 
         let totalBuffer: Buffer | null = null
 
@@ -136,9 +136,9 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
               <button
                 onClick={() => {
                   // Trigger download
-                  import('../lib/download').then(({ downloadFileFromTelegram }) => {
+                  import('../lib/download').then(async ({ downloadFileFromTelegram }) => {
                     if (sessionString && apiId && apiHash) {
-                      const client = getTelegramClient(sessionString, apiId, apiHash)
+                      const client = await getTelegramClient(sessionString, apiId, apiHash)
                       downloadFileFromTelegram(client, file)
                     }
                   })

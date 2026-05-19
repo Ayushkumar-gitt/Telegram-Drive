@@ -25,7 +25,7 @@ export const Uploader = ({ currentFolderId }: UploaderProps) => {
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     if (!sessionString || !apiId || !apiHash) return
 
-    const client = getTelegramClient(sessionString, apiId, apiHash)
+    const client = await getTelegramClient(sessionString, apiId, apiHash)
 
     // Determine the channel to upload to
     let targetChannelId = metadataChannelId

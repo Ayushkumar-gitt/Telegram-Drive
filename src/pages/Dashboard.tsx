@@ -48,8 +48,9 @@ export const Dashboard = () => {
   // Initialize TG client and sync
   useEffect(() => {
     if (sessionString && apiId && apiHash) {
-      const client = getTelegramClient(sessionString, apiId, apiHash)
-      syncFromMetadataChannel(client)
+      getTelegramClient(sessionString, apiId, apiHash).then(client => {
+        syncFromMetadataChannel(client)
+      })
     }
   }, [sessionString, apiId, apiHash, syncFromMetadataChannel])
 
@@ -63,7 +64,7 @@ export const Dashboard = () => {
     if (!newFolderName.trim() || !sessionString || !apiId || !apiHash) return
 
     try {
-      const client = getTelegramClient(sessionString, apiId, apiHash)
+      const client = await getTelegramClient(sessionString, apiId, apiHash)
 
       // Create a private channel in Telegram to act as the folder
       const result = await client.invoke(
@@ -309,7 +310,7 @@ export const Dashboard = () => {
                               e.stopPropagation();
                               if (!sessionString || !apiId || !apiHash) return;
                               const { downloadFileFromTelegram } = await import('../lib/download');
-                              const client = getTelegramClient(sessionString, apiId, apiHash);
+                              const client = await getTelegramClient(sessionString, apiId, apiHash);
                               toast.promise(
                                 downloadFileFromTelegram(client, item as TGFile),
                                 {

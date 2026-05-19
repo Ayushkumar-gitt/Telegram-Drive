@@ -24,7 +24,7 @@ export const Thumbnail = ({ file }: ThumbnailProps) => {
       if (!sessionString || !apiId || !apiHash) return
 
       try {
-        const client = getTelegramClient(sessionString, apiId, apiHash)
+        const client = await getTelegramClient(sessionString, apiId, apiHash)
 
         const messageId = file.isChunked && file.chunkMessageIds ? file.chunkMessageIds[0] : file.messageId
         const messages = await client.getMessages(file.channelId, { ids: [messageId] })

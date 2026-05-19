@@ -3,16 +3,19 @@ import { StringSession } from 'telegram/sessions'
 
 let client: TelegramClient | null = null
 
-export const getTelegramClient = (
+export const getTelegramClient = async (
   sessionString: string,
   apiId: number,
   apiHash: string
-): TelegramClient => {
+): Promise<TelegramClient> => {
   if (!client) {
     const session = new StringSession(sessionString)
     client = new TelegramClient(session, apiId, apiHash, {
       connectionRetries: 5,
     })
+  }
+  if (!client.connected) {
+    await client.connect()
   }
   return client
 }
