@@ -15,6 +15,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString();
 
+// Module-level cache to persist blob URLs for the lifetime of the session
+const sessionMediaCache = new Map<string, string>();
+
 interface FileViewerProps {
   file: TGFile | null
   onClose: () => void
@@ -30,6 +33,12 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
     if (!file || !sessionString || !apiId || !apiHash) return
 
     const loadMedia = async () => {
+      // Return cached url instantly if exists
+      if (sessionMediaCache.has(file.id)) {
+        setFileUrl(sessionMediaCache.get(file.id) as string)
+        return
+      }
+
       // Very simple size limit check to prevent browser crash from buffering into RAM
       // In a real robust implementation, we would write a ServiceWorker proxy
       // that intercepts requests and streams chunks natively.
@@ -44,7 +53,17 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
 
         let totalBuffer: Buffer | null = null
 
-        const peer = Number(file.channelId)
+        let peer: any = Number(file.channelId)
+        if (file.accessHash) {
+          const BigIntConstructor = (window as any).BigInt || globalThis.BigInt || Number
+          // We can dynamically require the API module or use a simpler structure if available.
+          // GramJS exports `Api` from telegram.
+          const { Api } = await import('telegram');
+          peer = new Api.InputPeerChannel({
+            channelId: BigIntConstructor(file.channelId.replace('-100', '')) as any,
+            accessHash: BigIntConstructor(file.accessHash) as any
+          })
+        }
 
         if (file.isChunked && file.chunkMessageIds && file.chunkMessageIds.length > 0) {
           const buffers: Buffer[] = []
@@ -72,6 +91,7 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
         if (totalBuffer) {
           const blob = new Blob([totalBuffer], { type: file.mimeType })
           const url = URL.createObjectURL(blob)
+          sessionMediaCache.set(file.id, url)
           setFileUrl(url)
         }
       } catch (error) {
@@ -83,10 +103,9 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
 
     loadMedia()
 
+    // Do not revoke the object URL on unmount, we want it cached for the session lifecycle.
     return () => {
-      if (fileUrl) {
-        URL.revokeObjectURL(fileUrl)
-      }
+      setFileUrl(null)
     }
   }, [file, sessionString, apiId, apiHash])
 

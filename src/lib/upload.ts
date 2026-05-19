@@ -11,12 +11,23 @@ export const uploadFileToTelegram = async (
   file: File,
   folderId: string | null,
   channelId: string, // The channel to upload to (either the folder's channel or the root metadata/storage channel)
+  accessHash: string | null, // Access hash if available
   onProgress?: (progress: number) => void
 ): Promise<TGFile> => {
 
   const uploadId = uuidv4()
 
   try {
+    let peer: any = Number(channelId)
+    if (accessHash) {
+      const BigIntConstructor = (window as any).BigInt || globalThis.BigInt || Number
+      const { Api } = await import('telegram')
+      peer = new Api.InputPeerChannel({
+        channelId: BigIntConstructor(channelId.replace('-100', '')) as any,
+        accessHash: BigIntConstructor(accessHash) as any
+      })
+    }
+
     if (file.size <= CHUNK_SIZE) {
       // Standard upload for files <= 1.9GB
 
@@ -27,9 +38,6 @@ export const uploadFileToTelegram = async (
         const buffer = await file.arrayBuffer()
         uploadFile = new CustomFile(file.name, file.size, "", Buffer.from(buffer))
       }
-
-      // Use Number() to convert the string ID to a number so GramJS resolves it properly
-      const peer = Number(channelId)
 
       const result = await client.sendFile(peer, {
         file: uploadFile,
@@ -70,7 +78,6 @@ export const uploadFileToTelegram = async (
           uploadChunkFile = new CustomFile(chunkFile.name, chunkFile.size, "", Buffer.from(buffer))
         }
 
-        const peer = Number(channelId)
         const result = await client.sendFile(peer, {
           file: uploadChunkFile,
           caption: `${file.name} (Part ${i + 1}/${totalChunks})`,

@@ -10,13 +10,22 @@ export const downloadFileFromTelegram = async (
   try {
     let totalBuffer: Buffer
 
+    let peer: any = Number(file.channelId)
+    if (file.accessHash) {
+      const BigIntConstructor = (window as any).BigInt || globalThis.BigInt || Number
+      const { Api } = await import('telegram')
+      peer = new Api.InputPeerChannel({
+        channelId: BigIntConstructor(file.channelId.replace('-100', '')) as any,
+        accessHash: BigIntConstructor(file.accessHash) as any
+      })
+    }
+
     if (file.isChunked && file.chunkMessageIds && file.chunkMessageIds.length > 0) {
       const buffers: Buffer[] = []
       const totalChunks = file.chunkMessageIds.length
 
       for (let i = 0; i < totalChunks; i++) {
         const messageId = file.chunkMessageIds[i]
-        const peer = Number(file.channelId)
         const messages = await client.getMessages(peer, { ids: [messageId] })
 
         if (messages.length === 0 || !messages[0].media) {
@@ -41,7 +50,6 @@ export const downloadFileFromTelegram = async (
       totalBuffer = Buffer.concat(buffers)
     } else {
       // 1. Fetch message metadata
-      const peer = Number(file.channelId)
       const messages = await client.getMessages(peer, { ids: [file.messageId] })
       if (messages.length === 0 || !messages[0].media) {
         throw new Error('File not found in Telegram')

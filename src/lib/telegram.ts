@@ -2,6 +2,7 @@ import { TelegramClient } from 'telegram'
 import { StringSession } from 'telegram/sessions'
 
 let client: TelegramClient | null = null
+let connectionPromise: Promise<any> | null = null
 
 export const getTelegramClient = async (
   sessionString: string,
@@ -15,8 +16,15 @@ export const getTelegramClient = async (
       useWSS: true,
     })
   }
+
   if (!client.connected) {
-    await client.connect()
+    if (!connectionPromise) {
+      connectionPromise = client.connect().catch(e => {
+        connectionPromise = null
+        throw e
+      })
+    }
+    await connectionPromise
   }
   return client
 }

@@ -18,7 +18,7 @@ interface UploaderProps {
 export const Uploader = ({ currentFolderId }: UploaderProps) => {
   const { tasks, addTask, updateTaskProgress, setTaskStatus, removeTask } = useUploadStore()
   const { sessionString, apiId, apiHash } = useAuthStore()
-  const { addFile, syncToMetadataChannel, metadataChannelId, folders } = useFileSystemStore()
+  const { addFile, syncToMetadataChannel, metadataChannelId, metadataAccessHash, folders } = useFileSystemStore()
 
   const [isMinimized, setIsMinimized] = useState(false)
 
@@ -29,9 +29,13 @@ export const Uploader = ({ currentFolderId }: UploaderProps) => {
 
     // Determine the channel to upload to
     let targetChannelId = metadataChannelId
+    let targetAccessHash = metadataAccessHash
     if (currentFolderId) {
       const folder = folders.find(f => f.id === currentFolderId)
-      if (folder) targetChannelId = folder.channelId
+      if (folder) {
+        targetChannelId = folder.channelId
+        targetAccessHash = folder.accessHash
+      }
     }
 
     if (!targetChannelId) {
@@ -56,6 +60,7 @@ export const Uploader = ({ currentFolderId }: UploaderProps) => {
           file,
           currentFolderId,
           targetChannelId,
+          targetAccessHash,
           (progress) => updateTaskProgress(taskId, progress)
         )
 
