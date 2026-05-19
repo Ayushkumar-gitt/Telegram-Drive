@@ -102,7 +102,8 @@ export const useFileSystemStore = create<FileSystemState>()(
 
           if (!channelId) return
 
-          const messages = await client.getMessages(channelId, { limit: 1 })
+          const peer = Number(channelId)
+          const messages = await client.getMessages(peer, { limit: 1 })
 
           if (messages.length > 0) {
             const msg = messages[0]
@@ -154,14 +155,15 @@ export const useFileSystemStore = create<FileSystemState>()(
 
           const jsonString = JSON.stringify(stateToSync)
 
+          const peer = Number(state.metadataChannelId)
           if (jsonString.length > 4000) {
             const buffer = Buffer.from(jsonString, 'utf-8')
-            await client.sendFile(state.metadataChannelId, {
+            await client.sendFile(peer, {
               file: buffer,
               caption: 'metadata.json'
             })
           } else {
-             await client.sendMessage(state.metadataChannelId, {
+             await client.sendMessage(peer, {
               message: jsonString
             })
           }

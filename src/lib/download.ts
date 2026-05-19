@@ -16,7 +16,8 @@ export const downloadFileFromTelegram = async (
 
       for (let i = 0; i < totalChunks; i++) {
         const messageId = file.chunkMessageIds[i]
-        const messages = await client.getMessages(file.channelId, { ids: [messageId] })
+        const peer = Number(file.channelId)
+        const messages = await client.getMessages(peer, { ids: [messageId] })
 
         if (messages.length === 0 || !messages[0].media) {
           throw new Error(`Chunk ${i + 1} not found in Telegram`)
@@ -39,7 +40,8 @@ export const downloadFileFromTelegram = async (
       totalBuffer = Buffer.concat(buffers)
     } else {
       // 1. Fetch message metadata
-      const messages = await client.getMessages(file.channelId, { ids: [file.messageId] })
+      const peer = Number(file.channelId)
+      const messages = await client.getMessages(peer, { ids: [file.messageId] })
       if (messages.length === 0 || !messages[0].media) {
         throw new Error('File not found in Telegram')
       }

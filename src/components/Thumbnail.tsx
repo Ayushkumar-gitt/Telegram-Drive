@@ -26,8 +26,9 @@ export const Thumbnail = ({ file }: ThumbnailProps) => {
       try {
         const client = await getTelegramClient(sessionString, apiId, apiHash)
 
+        const peer = Number(file.channelId)
         const messageId = file.isChunked && file.chunkMessageIds ? file.chunkMessageIds[0] : file.messageId
-        const messages = await client.getMessages(file.channelId, { ids: [messageId] })
+        const messages = await client.getMessages(peer, { ids: [messageId] })
 
         if (messages.length > 0 && messages[0].media) {
           const buffer = await client.downloadMedia(messages[0], { thumb: 1 })

@@ -28,7 +28,10 @@ export const uploadFileToTelegram = async (
         uploadFile = new CustomFile(file.name, file.size, "", Buffer.from(buffer))
       }
 
-      const result = await client.sendFile(channelId, {
+      // Use Number() to convert the string ID to a number so GramJS resolves it properly
+      const peer = Number(channelId)
+
+      const result = await client.sendFile(peer, {
         file: uploadFile,
         caption: file.name,
         forceDocument: true,
@@ -67,7 +70,8 @@ export const uploadFileToTelegram = async (
           uploadChunkFile = new CustomFile(chunkFile.name, chunkFile.size, "", Buffer.from(buffer))
         }
 
-        const result = await client.sendFile(channelId, {
+        const peer = Number(channelId)
+        const result = await client.sendFile(peer, {
           file: uploadChunkFile,
           caption: `${file.name} (Part ${i + 1}/${totalChunks})`,
           forceDocument: true,
