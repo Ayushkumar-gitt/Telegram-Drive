@@ -44,15 +44,18 @@ export const uploadFileToTelegram = async (
         uploadFile = customFile
       }
 
+      // Passing maxBufferSize forces gramjs to bypass the logic where it falls back to
+      // node `fs` functions internally which causes the 'CustomBuffer options' failure.
       const result = await client.sendFile(peer, {
         file: uploadFile,
         caption: file.name,
         forceDocument: true,
         workers: 4, // Upload speed optimization: concurrent workers
+        maxBufferSize: CHUNK_SIZE + 1024,
         progressCallback: (progress: number) => {
           if (onProgress) onProgress(progress * 100)
         }
-      })
+      } as any)
 
       const tgFile: TGFile = {
         id: uploadId,
@@ -87,18 +90,20 @@ export const uploadFileToTelegram = async (
           uploadChunkFile = customFile
         }
 
+        // Send maxBufferSize larger than CHUNK_SIZE so gramjs uses our buffer
         const result = await client.sendFile(peer, {
           file: uploadChunkFile,
           caption: `${file.name} (Part ${i + 1}/${totalChunks})`,
           forceDocument: true,
           workers: 4,
+          maxBufferSize: CHUNK_SIZE + 1024,
           progressCallback: (progress: number) => {
             if (onProgress) {
               const overallProgress = ((i + progress) / totalChunks) * 100
               onProgress(overallProgress)
             }
           }
-        })
+        } as any)
 
         chunkMessageIds.push(result.id)
       }
