@@ -267,7 +267,8 @@ export const Dashboard = () => {
             >
               {virtualizer.getVirtualItems().map((virtualRow) => {
                 const item = items[virtualRow.index]
-                const isFolder = 'channelId' in item
+                // Both TGFile and TGFolder have channelId. A folder has accessHash (and no mimeType)
+                const isFolder = 'accessHash' in item
 
                 return (
                   <motion.div
