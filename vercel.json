@@ -4,7 +4,7 @@
   "functions": {
     "api/simple/upload.ts": {
       "maxDuration": 300,
-      "memory": 3008
+      "memory": 1024
     },
     "api/simple/files.ts": {
       "maxDuration": 30
@@ -20,7 +20,7 @@
     },
     "api/simple/download/[fileId].ts": {
       "maxDuration": 300,
-      "memory": 3008
+      "memory": 1024
     }
   },
   "rewrites": [
