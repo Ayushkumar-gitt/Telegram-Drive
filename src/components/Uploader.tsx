@@ -8,7 +8,7 @@ import { useAuthStore } from '../store/auth'
 import { useFileSystemStore } from '../store/filesystem'
 import { getTelegramClient } from '../lib/telegram'
 import { uploadFileToTelegram } from '../lib/upload'
-import { apiRegisterUpload } from '../lib/simpleUserApi'
+import { apiUploadFile } from '../lib/simpleUserApi'
 import { v4 as uuidv4 } from 'uuid'
 import { toast } from 'react-hot-toast'
 
@@ -52,65 +52,16 @@ export const Uploader = ({ currentFolderId }: UploaderProps) => {
         setTaskStatus(taskId, 'uploading')
 
         if (accountType === 'simple') {
-          // ── Simple user: upload directly browser → Telegram, then register metadata ──
-          // The admin session is stored in the auth state (set by setSimpleSession),
-          // so we can connect to Telegram from the browser exactly like a Telegram user.
-          if (!sessionString || !apiId || !apiHash) {
-            setTaskStatus(taskId, 'error', 'Not authenticated')
-            continue
-          }
-
-          const client = await getTelegramClient(sessionString, apiId, apiHash)
-
-          // Resolve target channel: prefer current folder's channel, else root channel
-          let targetChannelId: string | null = null
-          let targetAccessHash: string | null = null
-
-          if (currentFolderId) {
-            const folder = useFileSystemStore.getState().folders.find(f => f.id === currentFolderId)
-            if (folder) {
-              targetChannelId = folder.channelId
-              targetAccessHash = folder.accessHash
-            }
-          }
-
-          // If no folder channel, fall back to the metadata channel (root)
-          if (!targetChannelId) {
-            await syncFromMetadataChannel(client)
-            const fsState = useFileSystemStore.getState()
-            targetChannelId = fsState.metadataChannelId
-            targetAccessHash = fsState.metadataAccessHash
-          }
-
-          if (!targetChannelId) {
-            setTaskStatus(taskId, 'error', 'Could not find storage channel')
-            continue
-          }
-
-          // Upload file parts directly to Telegram from the browser
-          const tgFile = await uploadFileToTelegram(
-            client,
+          // ── Simple user: server-side chunked upload (browser never touches Telegram) ─
+          // Large files are split into ≤3.5 MB chunks in apiUploadFile before
+          // each POST reaches Vercel, so the 4.5 MB body limit is never hit.
+          const result = await apiUploadFile(
+            userId, userId,
             file,
             currentFolderId,
-            targetChannelId,
-            targetAccessHash,
             (pct) => updateTaskProgress(taskId, pct)
           )
-
-          // Save only the metadata to Postgres via the lightweight Vercel endpoint
-          const result = await apiRegisterUpload(userId, userId, {
-            name: tgFile.name,
-            size: tgFile.size,
-            mimeType: tgFile.mimeType,
-            folderId: tgFile.folderId,
-            messageId: tgFile.messageId,
-            channelId: tgFile.channelId,
-            accessHash: tgFile.accessHash ?? null,
-            isChunked: tgFile.isChunked ?? false,
-            chunkMessageIds: tgFile.chunkMessageIds,
-          })
-
-          addFile({ ...tgFile, id: result.file.id })
+          addFile(result.file)
           setTaskStatus(taskId, 'completed')
 
         } else {

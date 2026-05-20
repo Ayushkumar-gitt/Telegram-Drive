@@ -17,19 +17,25 @@ function getPool(): Pool {
 async function ensureTables(db: Pool) {
   await db.query(`
     CREATE TABLE IF NOT EXISTS sc_user_files (
-      id           TEXT PRIMARY KEY,
-      user_id      TEXT NOT NULL,
-      name         TEXT NOT NULL,
-      size         BIGINT,
-      mime_type    TEXT,
-      created_at   BIGINT,
-      folder_id    TEXT,
-      message_id   INT,
-      channel_id   TEXT,
-      access_hash  TEXT,
-      is_chunked   BOOLEAN DEFAULT FALSE,
-      chunk_ids    TEXT
+      id             TEXT PRIMARY KEY,
+      user_id        TEXT NOT NULL,
+      name           TEXT NOT NULL,
+      size           BIGINT,
+      mime_type      TEXT,
+      created_at     BIGINT,
+      folder_id      TEXT,
+      message_id     INT,
+      channel_id     TEXT,
+      access_hash    TEXT,
+      is_chunked     BOOLEAN DEFAULT FALSE,
+      chunk_ids      TEXT,
+      is_chunk_part  BOOLEAN DEFAULT FALSE
     )
+  `)
+  // Safe migration: add column if table already existed without it
+  await db.query(`
+    ALTER TABLE sc_user_files
+      ADD COLUMN IF NOT EXISTS is_chunk_part BOOLEAN DEFAULT FALSE
   `)
   await db.query(`
     CREATE TABLE IF NOT EXISTS sc_user_folders (
@@ -76,8 +82,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `SELECT id, name, size, mime_type AS "mimeType", created_at AS "createdAt",
                 folder_id AS "folderId", message_id AS "messageId",
                 channel_id AS "channelId", access_hash AS "accessHash",
-                is_chunked AS "isChunked", chunk_ids AS "chunkMessageIds"
-         FROM sc_user_files WHERE user_id = $1 ORDER BY created_at DESC`,
+                is_chunked AS "isChunked", chunk_ids AS "chunkIds"
+         FROM sc_user_files
+         WHERE user_id = $1
+           AND (is_chunk_part IS NULL OR is_chunk_part = FALSE)
+         ORDER BY created_at DESC`,
         [userId]
       ),
       db.query(

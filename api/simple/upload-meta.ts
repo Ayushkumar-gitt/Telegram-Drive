@@ -5,22 +5,22 @@ import { v4 as uuidv4 } from 'uuid'
 /**
  * POST /api/simple/upload-meta
  *
- * Called AFTER the browser has already uploaded the file directly to Telegram
- * via GramJS raw MTProto (SaveBigFilePart / SaveFilePart + SendMedia).
- * This endpoint only persists the resulting metadata (message ID, channel, etc.)
- * to Postgres — no file bytes ever pass through Vercel.
+ * Registers a multi-chunk upload manifest after all chunk parts have been
+ * uploaded via /api/simple/upload-chunk. Saves a single 'manifest' row in
+ * sc_user_files with is_chunked=TRUE and chunk_ids pointing to the chunk
+ * part records.
  *
  * Body JSON:
  *   {
  *     name: string
- *     size: number
+ *     size: number          (total original file size)
  *     mimeType: string
  *     folderId: string | null
- *     messageId: number
+ *     messageId: number     (first chunk's message ID, for channel reference)
  *     channelId: string
  *     accessHash: string
- *     isChunked: boolean
- *     chunkMessageIds?: number[]   // only when isChunked === true
+ *     isChunked: true
+ *     chunkIds: string[]    (sc_user_files IDs of the is_chunk_part records)
  *   }
  */
 
@@ -38,19 +38,24 @@ function getPool(): Pool {
 async function ensureTables(db: Pool) {
   await db.query(`
     CREATE TABLE IF NOT EXISTS sc_user_files (
-      id           TEXT PRIMARY KEY,
-      user_id      TEXT NOT NULL,
-      name         TEXT NOT NULL,
-      size         BIGINT,
-      mime_type    TEXT,
-      created_at   BIGINT,
-      folder_id    TEXT,
-      message_id   INT,
-      channel_id   TEXT,
-      access_hash  TEXT,
-      is_chunked   BOOLEAN DEFAULT FALSE,
-      chunk_ids    TEXT
+      id             TEXT PRIMARY KEY,
+      user_id        TEXT NOT NULL,
+      name           TEXT NOT NULL,
+      size           BIGINT,
+      mime_type      TEXT,
+      created_at     BIGINT,
+      folder_id      TEXT,
+      message_id     INT,
+      channel_id     TEXT,
+      access_hash    TEXT,
+      is_chunked     BOOLEAN DEFAULT FALSE,
+      chunk_ids      TEXT,
+      is_chunk_part  BOOLEAN DEFAULT FALSE
     )
+  `)
+  await db.query(`
+    ALTER TABLE sc_user_files
+      ADD COLUMN IF NOT EXISTS is_chunk_part BOOLEAN DEFAULT FALSE
   `)
 }
 
@@ -73,7 +78,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     channelId,
     accessHash,
     isChunked,
-    chunkMessageIds,
+    chunkIds,        // array of sc_user_files UUIDs for the chunk part records
   } = req.body ?? {}
 
   if (!name || !messageId || !channelId) {
@@ -88,8 +93,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     await db.query(
       `INSERT INTO sc_user_files
-         (id, user_id, name, size, mime_type, created_at, folder_id, message_id, channel_id, access_hash, is_chunked, chunk_ids)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+         (id, user_id, name, size, mime_type, created_at, folder_id, message_id, channel_id, access_hash, is_chunked, chunk_ids, is_chunk_part)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, FALSE)`,
       [
         fileId,
         userId,
@@ -102,7 +107,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         channelId,
         accessHash ?? null,
         isChunked ?? false,
-        chunkMessageIds ? JSON.stringify(chunkMessageIds) : null,
+        chunkIds ? JSON.stringify(chunkIds) : null,
       ]
     )
 
@@ -119,7 +124,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         channelId,
         accessHash: accessHash ?? null,
         isChunked: isChunked ?? false,
-        chunkMessageIds: chunkMessageIds ?? null,
+        chunkIds: chunkIds ?? null,
       },
     })
   } catch (err: any) {

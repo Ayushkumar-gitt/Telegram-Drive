@@ -9,6 +9,10 @@
     "api/simple/upload-meta.ts": {
       "maxDuration": 30
     },
+    "api/simple/upload-chunk.ts": {
+      "maxDuration": 300,
+      "memory": 512
+    },
     "api/simple/files.ts": {
       "maxDuration": 30
     },
