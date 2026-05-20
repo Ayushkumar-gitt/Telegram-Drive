@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 import { TelegramClient } from 'telegram'
 import { Api } from 'telegram'
 import { Buffer } from 'buffer'
+import { useAuthStore } from './auth'
 
 export interface TGFile {
   id: string
@@ -38,11 +39,23 @@ export interface FileSystemState {
   addFile: (file: TGFile) => void
   removeFile: (id: string) => void
   removeFolder: (id: string) => void
+  /** Call this on login/logout to wipe cached state so the next sync picks the correct user channel */
+  clearForNewSession: () => void
+  /** Bulk-load state from server (used by simple users) */
+  setFilesAndFolders: (files: TGFile[], folders: TGFolder[]) => void
   syncFromMetadataChannel: (client: TelegramClient) => Promise<void>
   syncToMetadataChannel: (client: TelegramClient) => Promise<void>
 }
 
 const SYNC_CHANNEL_NAME = 'TG_Cloud_Storage_Metadata'
+// For simple users on admin account: each user gets their own namespaced channel
+function getMetadataChannelName(): string {
+  const { accountType, userId } = useAuthStore.getState()
+  if (accountType === 'simple' && userId) {
+    return `StarCloud_Meta_${userId}`
+  }
+  return SYNC_CHANNEL_NAME
+}
 
 export const useFileSystemStore = create<FileSystemState>()(
   persist(
@@ -71,6 +84,15 @@ export const useFileSystemStore = create<FileSystemState>()(
         files: state.files.filter(f => f.folderId !== id)
       })),
 
+      clearForNewSession: () => set({
+        files: [],
+        folders: [],
+        metadataChannelId: null,
+        metadataAccessHash: null,
+      }),
+
+      setFilesAndFolders: (files, folders) => set({ files, folders }),
+
       syncFromMetadataChannel: async (client: TelegramClient) => {
         try {
           const state = get()
@@ -81,7 +103,7 @@ export const useFileSystemStore = create<FileSystemState>()(
           // By calling getDialogs if we don't have an accessHash, we force GramJS to populate its entity cache.
           if (!channelId || !accessHash) {
             const dialogs = await client.getDialogs({})
-            const metadataDialog = dialogs.find(d => d.title === SYNC_CHANNEL_NAME)
+            const metadataDialog = dialogs.find(d => d.title === getMetadataChannelName())
 
             if (metadataDialog && metadataDialog.entity) {
               const id = metadataDialog.entity.id?.toString() || null
@@ -94,8 +116,8 @@ export const useFileSystemStore = create<FileSystemState>()(
             } else {
               const result = await client.invoke(
                 new Api.channels.CreateChannel({
-                  title: SYNC_CHANNEL_NAME,
-                  about: 'Metadata for TG Cloud Storage Web App. Do not delete or modify this channel.',
+                  title: getMetadataChannelName(),
+                  about: 'Metadata for Star Cloud storage. Do not delete or modify this channel.',
                   broadcast: true,
                 })
               )

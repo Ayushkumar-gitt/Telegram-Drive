@@ -13,7 +13,7 @@ interface ThumbnailProps {
 
 export const Thumbnail = ({ file }: ThumbnailProps) => {
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(thumbnailCache.get(file.id) || null)
-  const { sessionString, apiId, apiHash } = useAuthStore()
+  const { sessionString, apiId, apiHash, accountType } = useAuthStore()
 
   useEffect(() => {
     let isMounted = true
@@ -21,6 +21,8 @@ export const Thumbnail = ({ file }: ThumbnailProps) => {
     const fetchThumbnail = async () => {
       if (thumbnailUrl) return
       if (!file.mimeType.startsWith('image/') && !file.mimeType.startsWith('video/')) return
+      // Simple users don't use browser GramJS — skip thumbnail fetch to avoid WebSocket errors
+      if (accountType === 'simple') return
       if (!sessionString || !apiId || !apiHash) return
 
       try {

@@ -9,11 +9,10 @@ import { getTelegramClient } from '../lib/telegram'
 import { useAuthStore } from '../store/auth'
 import { Buffer } from 'buffer'
 
-// Ensure the worker version strictly matches the react-pdf core version
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-// Module-level cache to persist blob URLs for the lifetime of the session
 const sessionMediaCache = new Map<string, string>();
+const SIMPLE_API = import.meta.env.DEV ? 'http://localhost:3002' : ''
 
 interface FileViewerProps {
   file: TGFile | null
@@ -21,72 +20,72 @@ interface FileViewerProps {
 }
 
 export const FileViewer = ({ file, onClose }: FileViewerProps) => {
-  const { sessionString, apiId, apiHash } = useAuthStore()
+  const { sessionString, apiId, apiHash, userId, accountType } = useAuthStore()
   const [fileUrl, setFileUrl] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [numPages, setNumPages] = useState<number | null>(null)
 
   useEffect(() => {
-    if (!file || !sessionString || !apiId || !apiHash) return
+    if (!file) return
 
     const loadMedia = async () => {
-      // Return cached url instantly if exists
       if (sessionMediaCache.has(file.id)) {
         setFileUrl(sessionMediaCache.get(file.id) as string)
         return
       }
 
-      // Very simple size limit check to prevent browser crash from buffering into RAM
-      // In a real robust implementation, we would write a ServiceWorker proxy
-      // that intercepts requests and streams chunks natively.
-      const MAX_PREVIEW_SIZE = 100 * 1024 * 1024 // 100 MB
-      if (file.size > MAX_PREVIEW_SIZE) {
-        return // We will show a download prompt instead
-      }
+      const MAX_PREVIEW_SIZE = 100 * 1024 * 1024
+      if (file.size > MAX_PREVIEW_SIZE) return
 
       setIsLoading(true)
       try {
-        const client = await getTelegramClient(sessionString, apiId, apiHash)
+        let blob: Blob | null = null
 
-        let totalBuffer: Buffer | null = null
+        if (accountType === 'simple') {
+          // ── Simple user: stream via server API ──────────────────────────
+          const res = await fetch(
+            `${SIMPLE_API}/api/simple/download/${file.id}?userId=${encodeURIComponent(userId ?? '')}`,
+            { headers: { 'x-user-id': userId ?? '', 'x-session-token': userId ?? '' } }
+          )
+          if (!res.ok) throw new Error(`Server returned ${res.status}`)
+          const arrayBuffer = await res.arrayBuffer()
+          blob = new Blob([arrayBuffer], { type: file.mimeType || 'application/octet-stream' })
 
-        let peer: any = Number(file.channelId)
-        if (file.accessHash) {
-          const BigIntConstructor = (window as any).BigInt || globalThis.BigInt || Number
-          // We can dynamically require the API module or use a simpler structure if available.
-          // GramJS exports `Api` from telegram.
-          const { Api } = await import('telegram');
-          peer = new Api.InputPeerChannel({
-            channelId: BigIntConstructor(file.channelId.replace('-100', '')) as any,
-            accessHash: BigIntConstructor(file.accessHash) as any
-          })
-        }
-
-        if (file.isChunked && file.chunkMessageIds && file.chunkMessageIds.length > 0) {
-          const buffers: Buffer[] = []
-          for (const messageId of file.chunkMessageIds) {
-            const messages = await client.getMessages(peer, { ids: [messageId] })
+        } else {
+          // ── Telegram user: download via browser GramJS ───────────────────
+          if (!sessionString || !apiId || !apiHash) return
+          const client = await getTelegramClient(sessionString, apiId, apiHash)
+          let peer: any = Number(file.channelId)
+          if (file.accessHash) {
+            const BigIntConstructor = (window as any).BigInt || globalThis.BigInt || Number
+            const { Api } = await import('telegram')
+            peer = new Api.InputPeerChannel({
+              channelId: BigIntConstructor(file.channelId.replace('-100', '')) as any,
+              accessHash: BigIntConstructor(file.accessHash) as any
+            })
+          }
+          let totalBuffer: Buffer | null = null
+          if (file.isChunked && file.chunkMessageIds?.length) {
+            const buffers: Buffer[] = []
+            for (const messageId of file.chunkMessageIds) {
+              const messages = await client.getMessages(peer, { ids: [messageId] })
+              if (messages.length > 0 && messages[0].media) {
+                const buffer = await client.downloadMedia(messages[0], { workers: 4 } as any)
+                if (buffer) buffers.push(Buffer.from(buffer as ArrayBuffer))
+              }
+            }
+            if (buffers.length > 0) totalBuffer = Buffer.concat(buffers)
+          } else {
+            const messages = await client.getMessages(peer, { ids: [file.messageId] })
             if (messages.length > 0 && messages[0].media) {
-              const buffer = await client.downloadMedia(messages[0], {
-                workers: 4
-              } as any)
-              if (buffer) buffers.push(Buffer.from(buffer as ArrayBuffer))
+              const buffer = await client.downloadMedia(messages[0], { workers: 4 } as any)
+              if (buffer) totalBuffer = Buffer.from(buffer as ArrayBuffer)
             }
           }
-          if (buffers.length > 0) totalBuffer = Buffer.concat(buffers)
-        } else {
-          // Fetch the message containing the file
-          const messages = await client.getMessages(peer, { ids: [file.messageId] })
-          if (messages.length > 0 && messages[0].media) {
-            const buffer = await client.downloadMedia(messages[0], {
-              workers: 4
-            } as any)
-            if (buffer) totalBuffer = Buffer.from(buffer as ArrayBuffer)
-          }
+          if (totalBuffer) blob = new Blob([totalBuffer], { type: file.mimeType })
         }
 
-        if (totalBuffer) {
-          const blob = new Blob([totalBuffer], { type: file.mimeType })
+        if (blob) {
           const url = URL.createObjectURL(blob)
           sessionMediaCache.set(file.id, url)
           setFileUrl(url)
@@ -99,12 +98,9 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
     }
 
     loadMedia()
+    return () => { setFileUrl(null) }
+  }, [file, sessionString, apiId, apiHash, userId, accountType])
 
-    // Do not revoke the object URL on unmount, we want it cached for the session lifecycle.
-    return () => {
-      setFileUrl(null)
-    }
-  }, [file, sessionString, apiId, apiHash])
 
   if (!file) return null
 

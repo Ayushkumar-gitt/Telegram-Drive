@@ -47,5 +47,21 @@ export default defineConfig({
       path: 'path-browserify',
       fs: 'browserify-fs'
     }
+  },
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      }
+    },
+    watch: {
+      // Ignore runtime files written by admin-tg-server.mjs so Vite
+      // doesn't trigger HMR reloads when these files change during uploads
+      ignored: [
+        '**/.simple-user-meta.json',
+        '**/.tmp-uploads/**',
+      ]
+    }
   }
 })

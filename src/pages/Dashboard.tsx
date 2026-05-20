@@ -3,7 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useFileSystemStore, type TGFile, type TGFolder } from '../store/filesystem'
 import { useAuthStore } from '../store/auth'
-import { getTelegramClient } from '../lib/telegram'
+import { getTelegramClient, resetClient } from '../lib/telegram'
+import { apiListFiles, apiCreateFolder, apiDeleteFile, apiDeleteFolder } from '../lib/simpleUserApi'
 import { format } from 'date-fns'
 import { filesize } from 'filesize'
 import {
@@ -16,7 +17,10 @@ import {
   LogOut,
   FolderPlus,
   Download as DownloadIcon,
-  Trash2 as TrashIcon
+  Trash2 as TrashIcon,
+  User,
+  LayoutGrid,
+  List as ListIcon
 } from 'lucide-react'
 import { Api } from 'telegram'
 import { v4 as uuidv4 } from 'uuid'
@@ -28,7 +32,7 @@ import { Thumbnail } from '../components/Thumbnail'
 
 export const Dashboard = () => {
   const navigate = useNavigate()
-  const { sessionString, apiId, apiHash, logout } = useAuthStore()
+  const { sessionString, apiId, apiHash, userId, logout, accountType } = useAuthStore()
   const {
     files,
     folders,
@@ -36,7 +40,9 @@ export const Dashboard = () => {
     removeFile,
     removeFolder,
     syncFromMetadataChannel,
-    syncToMetadataChannel
+    syncToMetadataChannel,
+    clearForNewSession,
+    metadataChannelId
   } = useFileSystemStore()
 
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null)
@@ -44,62 +50,152 @@ export const Dashboard = () => {
   const [isCreatingFolder, setIsCreatingFolder] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const [viewingFile, setViewingFile] = useState<TGFile | null>(null)
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
 
   const parentRef = useRef<HTMLDivElement>(null)
 
-  // Initialize TG client and sync
+  // Initialize TG client and sync — only for telegram users
+  // Simple users load their file list from the server API
   useEffect(() => {
-    if (sessionString && apiId && apiHash) {
+    if (accountType === 'simple') {
+      if (!userId) return
+      apiListFiles(userId, userId)
+        .then(data => {
+          // Merge server state into local store
+          const { setFilesAndFolders } = useFileSystemStore.getState() as any
+          if (setFilesAndFolders) {
+            setFilesAndFolders(data.files, data.folders.filter((f: any) => f.id !== '__root__'))
+          } else {
+            // Fallback: set individually
+            data.files.forEach((f: any) => useFileSystemStore.getState().addFile(f))
+            data.folders
+              .filter((f: any) => f.id !== '__root__')
+              .forEach((f: any) => useFileSystemStore.getState().addFolder(f))
+          }
+        })
+        .catch(err => console.error('Failed to load files:', err))
+    } else if (sessionString && apiId && apiHash) {
       getTelegramClient(sessionString, apiId, apiHash).then(client => {
         syncFromMetadataChannel(client)
       })
     }
-  }, [sessionString, apiId, apiHash, syncFromMetadataChannel])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountType, userId, sessionString, apiId, apiHash])
 
   const handleLogout = () => {
+    clearForNewSession()   // wipe file list so next user starts clean
+    resetClient()          // disconnect the TG client singleton
     logout()
     navigate('/login')
   }
 
   const handleCreateFolder = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!newFolderName.trim() || !sessionString || !apiId || !apiHash) return
+    if (!newFolderName.trim()) return
 
     try {
-      const client = await getTelegramClient(sessionString, apiId, apiHash)
+      if (accountType === 'simple') {
+        // ── Simple user: create folder via server API ─────────────────────
+        if (!userId) return
+        const result = await apiCreateFolder(userId, userId, newFolderName.trim())
+        useFileSystemStore.getState().addFolder(result.folder)
+      } else {
+        // ── Telegram user: create channel via browser GramJS ──────────────
+        if (!sessionString || !apiId || !apiHash) return
+        const client = await getTelegramClient(sessionString, apiId, apiHash)
+        if (!metadataChannelId) await syncFromMetadataChannel(client)
 
-      // Create a private channel in Telegram to act as the folder
-      const result = await client.invoke(
-        new Api.channels.CreateChannel({
-          title: `TGC_${newFolderName}`,
-          about: `Folder: ${newFolderName}`,
-          broadcast: true,
-        })
-      )
-
-      const channel = (result as any).chats[0]
-      const rawId = channel.id.toString()
-      const channelId = rawId.startsWith('-100') ? rawId : `-100${rawId}`
-
-      const newFolder: TGFolder = {
-        id: uuidv4(),
-        name: newFolderName.trim(),
-        createdAt: Date.now(),
-        channelId: channelId,
-        accessHash: channel.accessHash.toString()
+        const result = await client.invoke(
+          new Api.channels.CreateChannel({
+            title: `TGC_${newFolderName.trim()}`,
+            about: `Folder: ${newFolderName.trim()} | User: ${userId}`,
+            broadcast: true,
+          })
+        )
+        const channel = (result as any).chats[0]
+        const rawId = channel.id.toString()
+        const channelId = rawId.startsWith('-100') ? rawId : `-100${rawId}`
+        const newFolder: TGFolder = {
+          id: uuidv4(),
+          name: newFolderName.trim(),
+          createdAt: Date.now(),
+          channelId,
+          accessHash: channel.accessHash.toString()
+        }
+        addFolder(newFolder)
+        await syncToMetadataChannel(client)
       }
-
-      addFolder(newFolder)
-      await syncToMetadataChannel(client)
 
       setIsCreatingFolder(false)
       setNewFolderName('')
       toast.success('Folder created')
-    } catch (error) {
+    } catch (error: any) {
       console.error(error)
-      toast.error('Failed to create folder')
+      toast.error(error?.message ?? 'Failed to create folder')
     }
   }
+
+  // ── Shared download handler ───────────────────────────────────────────────
+  const handleDownload = async (file: TGFile) => {
+    if (accountType === 'simple') {
+      if (!userId) return
+      const SIMPLE_API = import.meta.env.DEV ? 'http://localhost:3002' : ''
+      const a = document.createElement('a')
+      a.href = `${SIMPLE_API}/api/simple/download/${file.id}?userId=${encodeURIComponent(userId)}`
+      a.download = file.name
+      // Set headers via fetch + blob (XHR required for custom headers)
+      toast.promise(
+        fetch(`${SIMPLE_API}/api/simple/download/${file.id}?userId=${encodeURIComponent(userId)}`, {
+          headers: { 'x-user-id': userId, 'x-session-token': userId }
+        })
+          .then(r => r.blob())
+          .then(blob => {
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url; a.download = file.name
+            a.click()
+            URL.revokeObjectURL(url)
+          }),
+        { loading: 'Downloading…', success: 'Download complete', error: 'Download failed' }
+      )
+    } else {
+      if (!sessionString || !apiId || !apiHash) return
+      const { downloadFileFromTelegram } = await import('../lib/download')
+      const client = await getTelegramClient(sessionString, apiId, apiHash)
+      toast.promise(
+        downloadFileFromTelegram(client, file),
+        { loading: 'Downloading...', success: 'Download complete', error: 'Download failed' }
+      )
+    }
+  }
+
+  // ── Shared delete handler ─────────────────────────────────────────────────
+  const handleDelete = async (item: any, isFolder: boolean) => {
+    if (!confirm(`Delete this ${isFolder ? 'folder' : 'file'}?`)) return
+    try {
+      if (accountType === 'simple') {
+        if (!userId) return
+        if (isFolder) {
+          await apiDeleteFolder(userId, userId, item.id)
+          removeFolder(item.id)
+        } else {
+          await apiDeleteFile(userId, userId, item.id)
+          removeFile(item.id)
+        }
+      } else {
+        if (isFolder) removeFolder(item.id)
+        else removeFile(item.id)
+        if (sessionString && apiId && apiHash) {
+          const client = await getTelegramClient(sessionString, apiId, apiHash)
+          await syncToMetadataChannel(client)
+        }
+      }
+      toast.success(`${isFolder ? 'Folder' : 'File'} deleted`)
+    } catch (err: any) {
+      toast.error(err.message ?? 'Delete failed')
+    }
+  }
+
 
   // Filter items
   const items = useMemo(() => {
@@ -139,42 +235,59 @@ export const Dashboard = () => {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
+    <div className="h-screen flex flex-col bg-neutral-50 dark:bg-[#050505] text-black dark:text-white font-sans">
       {/* Header */}
-      <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 p-4">
+      <header className="bg-white/80 dark:bg-[#0a0a0a]/80 backdrop-blur-md border-b border-neutral-200 dark:border-white/10 p-4 sticky top-0 z-20">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             {currentFolderId && (
               <button
                 onClick={() => setCurrentFolderId(null)}
-                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors"
+                className="p-2 hover:bg-neutral-100 dark:hover:bg-white/10 rounded-full transition-colors text-neutral-500 hover:text-black dark:hover:text-white"
               >
                 <ArrowLeft className="w-5 h-5" />
               </button>
             )}
-            <h1 className="text-xl font-semibold">
+            <h1 className="text-xl font-bold tracking-tight">
               {currentFolderId
                 ? folders.find(f => f.id === currentFolderId)?.name
-                : 'My Cloud'}
+                : 'Star Cloud'}
             </h1>
           </div>
 
           <div className="flex-1 max-w-xl relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-neutral-400" />
             <input
               type="text"
               placeholder="Search files and folders..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 bg-gray-100 dark:bg-gray-700 border-none rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+              className="w-full pl-10 pr-4 py-2.5 bg-neutral-100 dark:bg-white/5 border border-transparent dark:border-white/5 rounded-xl focus:ring-2 focus:ring-neutral-200 dark:focus:ring-white/20 focus:border-transparent outline-none transition-all placeholder:text-neutral-400"
             />
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            <div className="hidden md:flex items-center bg-neutral-100 dark:bg-white/10 p-1 rounded-lg">
+              <button
+                onClick={() => setViewMode('grid')}
+                className={`p-1.5 rounded-md transition-all ${viewMode === 'grid' ? 'bg-white dark:bg-white/20 shadow-sm text-black dark:text-white' : 'text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-white'}`}
+                title="Grid View"
+              >
+                <LayoutGrid className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setViewMode('list')}
+                className={`p-1.5 rounded-md transition-all ${viewMode === 'list' ? 'bg-white dark:bg-white/20 shadow-sm text-black dark:text-white' : 'text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-white'}`}
+                title="List View"
+              >
+                <ListIcon className="w-4 h-4" />
+              </button>
+            </div>
+            
             {!currentFolderId && (
               <button
                 onClick={() => setIsCreatingFolder(true)}
-                className="p-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors flex items-center gap-2"
+                className="p-2.5 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-white/10 rounded-xl transition-colors flex items-center gap-2"
               >
                 <FolderPlus className="w-5 h-5" />
                 <span className="hidden sm:inline">New Folder</span>
@@ -182,14 +295,20 @@ export const Dashboard = () => {
             )}
             <button
               onClick={() => document.getElementById('global-file-input')?.click()}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
+              className="bg-black dark:bg-white hover:bg-neutral-800 dark:hover:bg-neutral-200 text-white dark:text-black px-4 py-2.5 rounded-xl transition-colors shadow-sm flex items-center gap-2 font-medium"
             >
               <Plus className="w-5 h-5" />
               <span className="hidden sm:inline">Upload</span>
             </button>
+            {userId && (
+              <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-neutral-100 dark:bg-white/10 text-neutral-600 dark:text-neutral-300 border border-neutral-200 dark:border-white/10">
+                <User className="w-4 h-4" />
+                {userId}
+              </div>
+            )}
             <button
               onClick={handleLogout}
-              className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors ml-2"
+              className="p-2.5 text-neutral-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-xl transition-colors ml-1"
               title="Logout"
             >
               <LogOut className="w-5 h-5" />
@@ -214,7 +333,7 @@ export const Dashboard = () => {
                 initial={{ scale: 0.95 }}
                 animate={{ scale: 1 }}
                 exit={{ scale: 0.95 }}
-                className="bg-white dark:bg-gray-800 rounded-xl p-6 w-full max-w-md shadow-xl"
+                className="bg-white dark:bg-[#111] rounded-2xl p-6 w-full max-w-md shadow-2xl border border-neutral-200 dark:border-white/10"
               >
                 <h2 className="text-xl font-semibold mb-4">Create New Folder</h2>
                 <form onSubmit={handleCreateFolder}>
@@ -224,20 +343,20 @@ export const Dashboard = () => {
                     value={newFolderName}
                     onChange={(e) => setNewFolderName(e.target.value)}
                     placeholder="Folder name"
-                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-transparent focus:ring-2 focus:ring-blue-500 outline-none mb-6"
+                    className="w-full px-4 py-3 border border-neutral-200 dark:border-white/10 rounded-xl bg-neutral-50 dark:bg-[#0a0a0a] focus:ring-2 focus:ring-neutral-200 dark:focus:ring-white/20 outline-none mb-6 transition-all"
                   />
                   <div className="flex justify-end gap-3">
                     <button
                       type="button"
                       onClick={() => setIsCreatingFolder(false)}
-                      className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                      className="px-5 py-2.5 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-white/5 rounded-xl transition-colors font-medium"
                     >
                       Cancel
                     </button>
                     <button
                       type="submit"
                       disabled={!newFolderName.trim()}
-                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg transition-colors"
+                      className="px-5 py-2.5 bg-black dark:bg-white text-white dark:text-black hover:bg-neutral-800 dark:hover:bg-neutral-200 disabled:opacity-50 rounded-xl transition-colors font-medium shadow-sm"
                     >
                       Create
                     </button>
@@ -249,21 +368,23 @@ export const Dashboard = () => {
         </AnimatePresence>
 
         {/* List Header */}
-        <div className="grid grid-cols-[1fr_120px_150px_40px] gap-4 px-4 py-2 text-sm font-medium text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
-          <div>Name</div>
-          <div>Size</div>
-          <div>Date modified</div>
-          <div></div>
-        </div>
+        {viewMode === 'list' && (
+          <div className="grid grid-cols-[1fr_120px_150px_60px] gap-4 px-6 py-3 text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider border-b border-neutral-200 dark:border-white/5">
+            <div>Name</div>
+            <div>Size</div>
+            <div>Date modified</div>
+            <div></div>
+          </div>
+        )}
 
         {/* Virtualized Grid/List */}
         <div ref={parentRef} className="flex-1 overflow-auto">
           {items.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-gray-500 space-y-4">
+            <div className="flex flex-col items-center justify-center h-full text-neutral-400 space-y-4">
               <CloudUploadIcon className="w-16 h-16 opacity-20" />
               <p>This folder is empty</p>
             </div>
-          ) : (
+          ) : viewMode === 'list' ? (
             <div
               style={{
                 height: `${virtualizer.getTotalSize()}px`,
@@ -288,68 +409,41 @@ export const Dashboard = () => {
                     }}
                   >
                     <motion.div
-                      layoutId={item.id}
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       className="group h-full"
                     >
                     <div
                       onClick={() => isFolder ? setCurrentFolderId(item.id) : setViewingFile(item as TGFile)}
-                      className="grid grid-cols-[1fr_120px_150px_40px] gap-4 items-center px-4 h-full border-b border-gray-100 dark:border-gray-800 hover:bg-blue-50 dark:hover:bg-blue-900/20 cursor-pointer transition-colors"
+                      className="grid grid-cols-[1fr_120px_150px_60px] gap-4 items-center px-6 h-full border-b border-neutral-100 dark:border-white/5 hover:bg-neutral-100/50 dark:hover:bg-white/5 cursor-pointer transition-colors"
                     >
                       <div className="flex items-center gap-3 overflow-hidden">
                         {isFolder ? (
-                          <FolderIcon className="w-6 h-6 text-blue-500 flex-shrink-0" fill="currentColor" fillOpacity={0.2} />
+                          <FolderIcon className="w-6 h-6 text-black dark:text-white flex-shrink-0" fill="currentColor" fillOpacity={0.1} />
                         ) : (
                           getFileIcon(item as TGFile)
                         )}
-                        <span className="truncate font-medium">{item.name}</span>
+                        <span className="truncate font-medium text-sm">{item.name}</span>
                       </div>
-                      <div className="text-sm text-gray-500">
+                      <div className="text-sm text-neutral-500 dark:text-neutral-400">
                         {isFolder ? '--' : filesize((item as TGFile).size)}
                       </div>
-                      <div className="text-sm text-gray-500">
+                      <div className="text-sm text-neutral-500 dark:text-neutral-400">
                         {format(item.createdAt, 'MMM d, yyyy')}
                       </div>
-                      <div className="flex justify-end gap-1">
-                        {!isFolder && (
+                      <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      {!isFolder && (
                           <button
-                            onClick={async (e) => {
-                              e.stopPropagation();
-                              if (!sessionString || !apiId || !apiHash) return;
-                              const { downloadFileFromTelegram } = await import('../lib/download');
-                              const client = await getTelegramClient(sessionString, apiId, apiHash);
-                              toast.promise(
-                                downloadFileFromTelegram(client, item as TGFile),
-                                {
-                                  loading: 'Downloading...',
-                                  success: 'Download complete',
-                                  error: 'Download failed'
-                                }
-                              );
-                            }}
-                            className="p-2 opacity-0 group-hover:opacity-100 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-all"
+                            onClick={(e) => { e.stopPropagation(); handleDownload(item as TGFile) }}
+                            className="p-2 hover:bg-neutral-200 dark:hover:bg-white/10 rounded-lg text-neutral-600 dark:text-neutral-400 transition-all"
                             title="Download"
                           >
                             <DownloadIcon className="w-4 h-4" />
                           </button>
                         )}
                         <button
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            if (!confirm(`Are you sure you want to delete this ${isFolder ? 'folder' : 'file'}?`)) return;
-                            if (isFolder) {
-                              removeFolder(item.id);
-                            } else {
-                              removeFile(item.id);
-                            }
-                            if (sessionString && apiId && apiHash) {
-                              const client = await getTelegramClient(sessionString, apiId, apiHash);
-                              await syncToMetadataChannel(client);
-                            }
-                            toast.success(`${isFolder ? 'Folder' : 'File'} deleted`);
-                          }}
-                          className="p-2 opacity-0 group-hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-900/20 text-red-500 rounded-full transition-all"
+                          onClick={(e) => { e.stopPropagation(); handleDelete(item, isFolder) }}
+                          className="p-2 hover:bg-red-50 dark:hover:bg-red-500/10 text-red-500 rounded-lg transition-all"
                           title="Delete"
                         >
                           <TrashIcon className="w-4 h-4" />
@@ -358,6 +452,55 @@ export const Dashboard = () => {
                     </div>
                     </motion.div>
                   </div>
+                )
+              })}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 p-4">
+              {items.map((item) => {
+                const isFolder = item.type === 'folder'
+                return (
+                  <motion.div
+                    key={item.id}
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    onClick={() => isFolder ? setCurrentFolderId(item.id) : setViewingFile(item as TGFile)}
+                    className="group relative bg-white dark:bg-[#111] border border-neutral-200 dark:border-white/10 rounded-2xl p-4 flex flex-col items-center gap-3 cursor-pointer hover:shadow-lg dark:hover:border-white/30 transition-all"
+                  >
+                    <div className="w-16 h-16 flex items-center justify-center">
+                      {isFolder ? (
+                        <FolderIcon className="w-16 h-16 text-black dark:text-white" fill="currentColor" fillOpacity={0.1} />
+                      ) : (
+                        getFileIcon(item as TGFile)
+                      )}
+                    </div>
+                    <div className="w-full text-center">
+                      <p className="text-sm font-medium truncate">{item.name}</p>
+                      <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
+                        {isFolder ? format(item.createdAt, 'MMM d') : filesize((item as TGFile).size)}
+                      </p>
+                    </div>
+
+                    {/* Action buttons overlay for grid */}
+                    <div className="absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      {!isFolder && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDownload(item as TGFile) }}
+                            className="p-1.5 bg-white/90 dark:bg-[#111]/90 hover:bg-neutral-100 dark:hover:bg-white/10 backdrop-blur shadow-sm rounded-lg text-neutral-600 dark:text-neutral-300 transition-all"
+                            title="Download"
+                          >
+                            <DownloadIcon className="w-4 h-4" />
+                          </button>
+                        )}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDelete(item, isFolder) }}
+                          className="p-1.5 bg-white/90 dark:bg-[#111]/90 hover:bg-red-50 dark:hover:bg-red-500/10 backdrop-blur shadow-sm rounded-lg text-red-500 transition-all"
+                          title="Delete"
+                        >
+                          <TrashIcon className="w-4 h-4" />
+                        </button>
+                    </div>
+                  </motion.div>
                 )
               })}
             </div>
