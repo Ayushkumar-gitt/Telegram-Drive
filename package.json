@@ -26,6 +26,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "filesize": "^11.0.17",
+    "formidable": "^3.5.4",
     "framer-motion": "^12.39.0",
     "localforage": "^1.10.0",
     "lucide-react": "^1.16.0",
@@ -53,6 +54,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/formidable": "^3.5.1",
     "@types/mime-types": "^3.0.1",
     "@types/node": "^24.12.4",
     "@types/pg": "^8.20.0",

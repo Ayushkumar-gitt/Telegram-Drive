@@ -1,6 +1,28 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "functions": {
+    "api/simple/upload.ts": {
+      "maxDuration": 300,
+      "memory": 3008
+    },
+    "api/simple/files.ts": {
+      "maxDuration": 30
+    },
+    "api/simple/files/[fileId].ts": {
+      "maxDuration": 30
+    },
+    "api/simple/folders.ts": {
+      "maxDuration": 60
+    },
+    "api/simple/folders/[folderId].ts": {
+      "maxDuration": 30
+    },
+    "api/simple/download/[fileId].ts": {
+      "maxDuration": 300,
+      "memory": 3008
+    }
+  },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
