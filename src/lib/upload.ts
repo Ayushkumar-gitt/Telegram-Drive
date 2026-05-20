@@ -46,11 +46,12 @@ function getPartSizeBytes(fileSize: number): number {
  * Read a slice of a browser File as a Buffer.
  * Uses file.slice() + blob.arrayBuffer() so we never load the whole file.
  */
-async function readFileSlice(file: File, start: number, end: number): Promise<any> {
+async function readFileSlice(file: File, start: number, end: number): Promise<Uint8Array> {
   const blob = file.slice(start, end)
   const ab = await blob.arrayBuffer()
   // Use the global Buffer (same as GramJS uses) — NOT the one from 'buffer' package
-  const GlobalBuffer = globalThis.Buffer
+  // Cast through unknown to avoid TS7017 (no index signature on globalThis)
+  const GlobalBuffer = (globalThis as unknown as { Buffer: { from(ab: ArrayBuffer): Uint8Array } }).Buffer
   return GlobalBuffer.from(ab)
 }
 
@@ -100,7 +101,7 @@ async function directUploadFile(
       const bytes = await readFileSlice(file, start, end)
 
       batch.push(
-        (async (partIndex: number, partBytes: Buffer) => {
+        (async (partIndex: number, partBytes: Uint8Array) => {
           // Retry loop for transient failures
           while (true) {
             let sender
@@ -225,7 +226,7 @@ export const uploadFileToTelegram = async (
             forceFile: true,
           }),
           message: file.name,
-          randomId: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)),
+          randomId: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)) as any,
         })
       )
 
@@ -287,7 +288,7 @@ export const uploadFileToTelegram = async (
               forceFile: true,
             }),
             message: `${file.name} (Part ${i + 1}/${totalChunks})`,
-            randomId: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)),
+            randomId: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)) as any,
           })
         )
 
