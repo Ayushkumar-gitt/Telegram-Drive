@@ -6,6 +6,9 @@
       "maxDuration": 300,
       "memory": 1024
     },
+    "api/simple/upload-meta.ts": {
+      "maxDuration": 30
+    },
     "api/simple/files.ts": {
       "maxDuration": 30
     },

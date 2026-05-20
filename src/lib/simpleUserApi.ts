@@ -37,68 +37,39 @@ export async function apiCreateFolder(userId: string, sessionToken: string, fold
   return data
 }
 
-export async function apiUploadFile(
+/**
+ * Register a file that has already been uploaded directly from the browser
+ * to Telegram. This only sends tiny metadata JSON to Vercel — the file bytes
+ * never pass through the serverless function, so there is no 4.5 MB limit.
+ */
+export async function apiRegisterUpload(
   userId: string,
   sessionToken: string,
-  file: File,
-  folderId: string | null,
-  onProgress?: (pct: number) => void
+  meta: {
+    name: string
+    size: number
+    mimeType: string
+    folderId: string | null
+    messageId: number
+    channelId: string
+    accessHash: string | null
+    isChunked: boolean
+    chunkMessageIds?: number[]
+  }
 ) {
-  const form = new FormData()
-  form.append('file', file)
-  form.append('userId', userId)
-  if (folderId) form.append('folderId', folderId)
-
-  // The server streams real GramJS upload progress as SSE events.
-  // We use fetch + ReadableStream (not EventSource, which only supports GET).
-  const response = await fetch(`${API_BASE}/api/simple/upload`, {
+  const res = await fetch(`${API_BASE}/api/simple/upload-meta`, {
     method: 'POST',
     headers: {
+      'Content-Type': 'application/json',
       'x-user-id': userId,
       'x-session-token': sessionToken,
-      // Do NOT set Content-Type — browser must set it with the multipart boundary
     },
-    body: form,
+    body: JSON.stringify(meta),
   })
 
-  if (!response.ok || !response.body) {
-    const text = await response.text().catch(() => 'Upload failed')
-    throw new Error(text)
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-
-    // SSE events are separated by double newlines
-    const parts = buffer.split('\n\n')
-    buffer = parts.pop() ?? ''  // keep incomplete last chunk
-
-    for (const part of parts) {
-      const line = part.trim()
-      if (!line.startsWith('data: ')) continue
-
-      let event: any
-      try { event = JSON.parse(line.slice(6)) } catch { continue }
-
-      if (event.type === 'progress' && onProgress) {
-        onProgress(event.pct)           // real % from GramJS progressCallback
-      } else if (event.type === 'done') {
-        if (onProgress) onProgress(100)
-        return event                    // { success: true, file: {...} }
-      } else if (event.type === 'error') {
-        throw new Error(event.error ?? 'Upload failed')
-      }
-    }
-  }
-
-  throw new Error('Upload stream ended without a completion event')
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error ?? 'Failed to register upload')
+  return data as { success: true; file: any }
 }
 
 export async function apiDeleteFile(userId: string, sessionToken: string, fileId: string) {
