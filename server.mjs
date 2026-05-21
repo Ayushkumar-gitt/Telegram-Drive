@@ -428,6 +428,10 @@ app.delete('/api/simple/files/:fileId', requireUser, async (req, res) => {
 // Frontend is served from Cloudflare Pages (free, unlimited bandwidth).
 // Railway is a pure JSON API server — egress cost is effectively $0.
 
+// ── Health check ──────────────────────────────────────────────────────────
+// Railway pings this after every deploy to confirm the server is ready.
+app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }))
+
 // ── Start ─────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000   // Railway sets PORT automatically
 
