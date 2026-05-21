@@ -1,28 +1,26 @@
 /**
  * src/lib/simpleUserApi.ts
  *
- * For simple (email+password) users: all Telegram operations go through
- * the Vercel serverless API (Node.js), which holds the persistent admin
- * TG client.  The browser never connects to Telegram directly.
+ * All API calls for simple (email+password) users go to the Railway server.
+ * The server is a persistent Node.js Express process with:
+ *   - No request body size limit
+ *   - No execution timeout
+ *   - One persistent Telegram client (no per-request reconnects)
  *
- * Upload strategy:
- *   Files ≤ 3.5 MB  → single POST to /api/simple/upload-chunk
- *   Files  > 3.5 MB → N sequential POSTs to /api/simple/upload-chunk
- *                      (each chunk < 3.5 MB, well under Vercel's 4.5 MB limit)
- *                    → 1 final POST to /api/simple/upload-meta (manifest only)
+ * Upload: sends the full file in one multipart POST.
+ *         Railway has no body-size limit — this just works for any file size.
+ * Download: server streams directly from Telegram using iterDownload.
  */
 
-const API_BASE = import.meta.env.VITE_SIMPLE_API_URL
-  ?? (import.meta.env.DEV ? 'http://localhost:3002' : '')
+// In production (Railway) the server serves both the frontend and the API
+// from the same origin, so no base URL is needed.
+// In local dev, set VITE_SIMPLE_API_URL=http://localhost:3000 (or 3002).
+const API_BASE = import.meta.env.VITE_SIMPLE_API_URL ?? ''
 
-/** 3.5 MB — comfortably under Vercel's 4.5 MB body limit */
-const CHUNK_SIZE = 3.5 * 1024 * 1024
-
-function authHeaders(userId: string, sessionToken: string) {
+function authHeaders(userId: string) {
   return {
     'x-user-id': userId,
-    'x-session-token': sessionToken,
-    // NOTE: Do NOT set Content-Type for multipart — browser must add the boundary
+    // session token not needed — userId is the identity on the server
   }
 }
 
@@ -37,9 +35,9 @@ async function readSSE(
     throw new Error(text)
   }
 
-  const reader = response.body.getReader()
+  const reader  = response.body.getReader()
   const decoder = new TextDecoder()
-  let buffer = ''
+  let buffer    = ''
 
   while (true) {
     const { done, value } = await reader.read()
@@ -69,56 +67,22 @@ async function readSSE(
   throw new Error('Upload stream ended without a completion event')
 }
 
-// ── Upload a single chunk (or a small whole file) to /api/simple/upload-chunk
-
-async function uploadOneChunk(
-  userId: string,
-  sessionToken: string,
-  chunkBlob: Blob,
-  opts: {
-    origName: string
-    origSize: number
-    origMime: string
-    folderId: string | null
-    partIndex: number
-    totalParts: number
-  },
-  onProgress?: (pct: number) => void
-): Promise<any> {
-  const form = new FormData()
-  form.append('file', chunkBlob, opts.origName)
-  form.append('origName',   opts.origName)
-  form.append('origSize',   String(opts.origSize))
-  form.append('origMime',   opts.origMime)
-  form.append('partIndex',  String(opts.partIndex))
-  form.append('totalParts', String(opts.totalParts))
-  if (opts.folderId) form.append('folderId', opts.folderId)
-
-  const response = await fetch(`${API_BASE}/api/simple/upload-chunk`, {
-    method: 'POST',
-    headers: authHeaders(userId, sessionToken),
-    body: form,
-  })
-
-  return readSSE(response, onProgress)
-}
-
 // ── Public API ─────────────────────────────────────────────────────────────
 
-export async function apiListFiles(userId: string, sessionToken: string) {
-  const res = await fetch(`${API_BASE}/api/simple/files?userId=${encodeURIComponent(userId)}`, {
-    headers: { 'x-user-id': userId, 'x-session-token': sessionToken },
+export async function apiListFiles(userId: string, _sessionToken?: string) {
+  const res = await fetch(`${API_BASE}/api/simple/files`, {
+    headers: authHeaders(userId),
   })
   const data = await res.json()
   if (!res.ok) throw new Error(data.error ?? 'Failed to list files')
   return data as { files: any[]; folders: any[] }
 }
 
-export async function apiCreateFolder(userId: string, sessionToken: string, folderName: string) {
+export async function apiCreateFolder(userId: string, _sessionToken: string, folderName: string) {
   const res = await fetch(`${API_BASE}/api/simple/folders`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-user-id': userId, 'x-session-token': sessionToken },
-    body: JSON.stringify({ userId, folderName }),
+    headers: { 'Content-Type': 'application/json', ...authHeaders(userId) },
+    body: JSON.stringify({ folderName }),
   })
   const data = await res.json()
   if (!res.ok) throw new Error(data.error ?? 'Failed to create folder')
@@ -126,142 +90,55 @@ export async function apiCreateFolder(userId: string, sessionToken: string, fold
 }
 
 /**
- * Upload a file for a simple user.
- *
- * Small files (≤ 3.5 MB): one request → done immediately.
- * Large files (> 3.5 MB): split into ≤ 3.5 MB chunks, upload each
- * sequentially, then register a manifest record with the chunk IDs.
+ * Upload a file.
+ * Railway has no body size limit — send the whole file in one POST.
+ * Progress is streamed back via SSE from the server.
  */
 export async function apiUploadFile(
   userId: string,
-  sessionToken: string,
+  _sessionToken: string,
   file: File,
   folderId: string | null,
   onProgress?: (pct: number) => void
 ) {
-  const origMime = file.type || 'application/octet-stream'
-  const totalParts = Math.ceil(file.size / CHUNK_SIZE)
+  const form = new FormData()
+  form.append('file', file, file.name)
+  if (folderId) form.append('folderId', folderId)
 
-  if (totalParts <= 1) {
-    // ── Single-chunk upload ───────────────────────────────────────────────
-    const event = await uploadOneChunk(
-      userId, sessionToken,
-      file,
-      { origName: file.name, origSize: file.size, origMime, folderId, partIndex: 0, totalParts: 1 },
-      onProgress
-    )
-    return { file: event.file }
-  }
-
-  // ── Multi-chunk upload ──────────────────────────────────────────────────
-  const chunkRecords: any[] = []
-
-  for (let i = 0; i < totalParts; i++) {
-    const start = i * CHUNK_SIZE
-    const end = Math.min(start + CHUNK_SIZE, file.size)
-    const blob = file.slice(start, end)
-
-    const chunkProgress = (pct: number) => {
-      // Map this chunk's progress into the overall 0–95% range
-      const overall = ((i + pct / 100) / totalParts) * 95
-      onProgress?.(Math.round(overall))
-    }
-
-    const event = await uploadOneChunk(
-      userId, sessionToken,
-      blob,
-      {
-        origName: file.name,
-        origSize: file.size,
-        origMime,
-        folderId,
-        partIndex: i,
-        totalParts,
-      },
-      chunkProgress
-    )
-
-    chunkRecords.push(event.file)
-  }
-
-  // ── Register manifest ─────────────────────────────────────────────────
-  onProgress?.(97)
-
-  const firstChunk = chunkRecords[0]
-  const manifest = await apiRegisterManifest(userId, sessionToken, {
-    name: file.name,
-    size: file.size,
-    mimeType: origMime,
-    folderId,
-    messageId: firstChunk.messageId,
-    channelId: firstChunk.channelId,
-    accessHash: firstChunk.accessHash,
-    isChunked: true,
-    chunkIds: chunkRecords.map(c => c.id),
-  })
-
-  onProgress?.(100)
-  return manifest
-}
-
-/** Save the manifest for a multi-chunk upload (internal helper). */
-async function apiRegisterManifest(
-  userId: string,
-  sessionToken: string,
-  meta: {
-    name: string
-    size: number
-    mimeType: string
-    folderId: string | null
-    messageId: number
-    channelId: string
-    accessHash: string | null
-    isChunked: boolean
-    chunkIds: string[]
-  }
-) {
-  const res = await fetch(`${API_BASE}/api/simple/upload-meta`, {
+  const response = await fetch(`${API_BASE}/api/simple/upload`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-user-id': userId,
-      'x-session-token': sessionToken,
-    },
-    body: JSON.stringify(meta),
+    headers: authHeaders(userId),
+    body: form,
   })
-  const data = await res.json()
-  if (!res.ok) throw new Error(data.error ?? 'Failed to register upload manifest')
-  return data as { success: true; file: any }
+
+  const event = await readSSE(response, onProgress)
+  return { file: event.file }
 }
 
-export async function apiDeleteFile(userId: string, sessionToken: string, fileId: string) {
+export async function apiDeleteFile(userId: string, _sessionToken: string, fileId: string) {
   const res = await fetch(`${API_BASE}/api/simple/files/${fileId}`, {
     method: 'DELETE',
-    headers: { 'Content-Type': 'application/json', 'x-user-id': userId, 'x-session-token': sessionToken },
-    body: JSON.stringify({ userId }),
+    headers: { 'Content-Type': 'application/json', ...authHeaders(userId) },
   })
   const data = await res.json()
   if (!res.ok) throw new Error(data.error ?? 'Failed to delete file')
   return data
 }
 
-export async function apiDeleteFolder(userId: string, sessionToken: string, folderId: string) {
+export async function apiDeleteFolder(userId: string, _sessionToken: string, folderId: string) {
   const res = await fetch(`${API_BASE}/api/simple/folders/${folderId}`, {
     method: 'DELETE',
-    headers: { 'Content-Type': 'application/json', 'x-user-id': userId, 'x-session-token': sessionToken },
-    body: JSON.stringify({ userId }),
+    headers: { 'Content-Type': 'application/json', ...authHeaders(userId) },
   })
   const data = await res.json()
   if (!res.ok) throw new Error(data.error ?? 'Failed to delete folder')
   return data
 }
 
-export async function apiGetDownloadUrl(userId: string, sessionToken: string, fileId: string) {
-  const res = await fetch(
-    `${API_BASE}/api/simple/download/${fileId}?userId=${encodeURIComponent(userId)}`,
-    { headers: { 'x-user-id': userId, 'x-session-token': sessionToken } }
-  )
-  const data = await res.json()
-  if (!res.ok) throw new Error(data.error ?? 'Failed to get download URL')
-  return data as { url: string; filename: string }
+/**
+ * Returns the URL to stream-download a file through the Railway server.
+ * The browser hits this URL directly; the server proxies bytes from Telegram.
+ */
+export function apiGetDownloadUrl(userId: string, fileId: string): string {
+  return `${API_BASE}/api/simple/download/${fileId}?_uid=${encodeURIComponent(userId)}`
 }
