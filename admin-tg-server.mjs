@@ -60,7 +60,7 @@ let adminClient = null
 async function getAdminClient() {
   if (adminClient?.connected) return adminClient
 
-  const apiId  = Number(process.env.ADMIN_API_ID)
+  const apiId = Number(process.env.ADMIN_API_ID)
   const apiHash = process.env.ADMIN_API_HASH
   const sessionStr = process.env.ADMIN_SESSION_STRING
 
@@ -163,7 +163,7 @@ app.post('/api/simple/upload', requireUser, upload.single('file'), async (req, r
       // flush() is injected by compression middleware if present;
       // call it if available so events aren't held in a buffer.
       if (typeof res.flush === 'function') res.flush()
-    } catch {}
+    } catch { }
   }
 
   try {
@@ -261,7 +261,7 @@ app.post('/api/simple/upload', requireUser, upload.single('file'), async (req, r
 
     meta[req.userId].files.push(newFile)
     await saveMeta(meta)
-    unlink(tmpPath).catch(() => {})
+    unlink(tmpPath).catch(() => { })
 
     // Send the completed file as the final SSE event
     send({ type: 'done', file: newFile })
@@ -269,11 +269,12 @@ app.post('/api/simple/upload', requireUser, upload.single('file'), async (req, r
 
   } catch (err) {
     console.error('upload error:', err)
-    if (tmpPath) unlink(tmpPath).catch(() => {})
+    if (tmpPath) unlink(tmpPath).catch(() => { })
     send({ type: 'error', error: err.message })
     res.end()
   }
 })
+
 
 // ── DELETE /api/simple/files/:fileId ─────────────────────────────────────
 app.delete('/api/simple/files/:fileId', requireUser, async (req, res) => {
