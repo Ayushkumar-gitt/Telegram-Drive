@@ -43,16 +43,23 @@ function getPartSizeBytes(fileSize: number): number {
 }
 
 /**
- * Read a slice of a browser File as a Buffer.
+ * Read a slice of a browser File as a Buffer-compatible Uint8Array.
  * Uses file.slice() + blob.arrayBuffer() so we never load the whole file.
+ *
+ * Prefers globalThis.Buffer (set by vite-plugin-node-polyfills globals:true)
+ * because GramJS's MTProto serializer expects a Buffer-compatible object.
+ * Falls back to native Uint8Array if the polyfill isn't injected — Uint8Array
+ * is the base class of Buffer so GramJS accepts it for the bytes fields.
  */
 async function readFileSlice(file: File, start: number, end: number): Promise<Uint8Array> {
   const blob = file.slice(start, end)
   const ab = await blob.arrayBuffer()
-  // Use the global Buffer (same as GramJS uses) — NOT the one from 'buffer' package
-  // Cast through unknown to avoid TS7017 (no index signature on globalThis)
-  const GlobalBuffer = (globalThis as unknown as { Buffer: { from(ab: ArrayBuffer): Uint8Array } }).Buffer
-  return GlobalBuffer.from(ab)
+  // Use the global Buffer injected by vite-plugin-node-polyfills (globals: true).
+  // This is the SAME Buffer GramJS uses internally, so instanceof checks pass.
+  const GlobalBuffer = (globalThis as any).Buffer
+  if (GlobalBuffer?.from) return GlobalBuffer.from(ab)
+  // Fallback: native Uint8Array (works with modern GramJS which accepts Uint8Array)
+  return new Uint8Array(ab)
 }
 
 /**

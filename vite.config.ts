@@ -9,7 +9,10 @@ export default defineConfig({
     react(),
     tailwindcss(),
     nodePolyfills({
-      include: ['path', 'fs', 'crypto', 'stream', 'buffer', 'process', 'util', 'events', 'constants', 'os', 'vm', 'net']
+      include: ['path', 'fs', 'crypto', 'stream', 'buffer', 'process', 'util', 'events', 'constants', 'os', 'vm', 'net'],
+      // globals:true injects Buffer, process, etc. into globalThis at runtime.
+      // Without this, Buffer is only available as an import — globalThis.Buffer stays undefined.
+      globals: { Buffer: true, process: true, global: true },
     }),
     VitePWA({
       registerType: 'autoUpdate',
