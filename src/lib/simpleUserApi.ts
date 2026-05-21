@@ -24,47 +24,25 @@ function authHeaders(userId: string) {
   }
 }
 
-// ── Internal SSE reader ────────────────────────────────────────────────────
+// ── Two-phase upload with real progress ────────────────────────────────────
+//
+// Phase 1 (0 → 50 %): Browser → Railway server
+//   Uses XMLHttpRequest.upload.onprogress — fires as bytes leave your device.
+//   fetch() has no equivalent API, which is why the progress bar was silent.
+//
+// Phase 2 (50 → 100 %): Railway server → Telegram
+//   The server responds with an SSE stream (text/event-stream).
+//   Each "data: {type:'progress', pct:N}" event maps to this phase.
+//   Server progress 0–100 is remapped to 50–100 in the UI.
 
-async function readSSE(
-  response: Response,
-  onProgress?: (pct: number) => void
-): Promise<any> {
-  if (!response.ok || !response.body) {
-    const text = await response.text().catch(() => 'Request failed')
-    throw new Error(text)
+function parseSSEChunk(chunk: string): Array<{ type: string; [k: string]: any }> {
+  const events: Array<{ type: string; [k: string]: any }> = []
+  for (const part of chunk.split('\n\n')) {
+    const line = part.trim()
+    if (!line.startsWith('data: ')) continue
+    try { events.push(JSON.parse(line.slice(6))) } catch { /* skip malformed */ }
   }
-
-  const reader  = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer    = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-    const parts = buffer.split('\n\n')
-    buffer = parts.pop() ?? ''
-
-    for (const part of parts) {
-      const line = part.trim()
-      if (!line.startsWith('data: ')) continue
-      let event: any
-      try { event = JSON.parse(line.slice(6)) } catch { continue }
-
-      if (event.type === 'progress' && onProgress) {
-        onProgress(event.pct)
-      } else if (event.type === 'done') {
-        if (onProgress) onProgress(100)
-        return event
-      } else if (event.type === 'error') {
-        throw new Error(event.error ?? 'Upload failed')
-      }
-    }
-  }
-
-  throw new Error('Upload stream ended without a completion event')
+  return events
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -90,29 +68,73 @@ export async function apiCreateFolder(userId: string, _sessionToken: string, fol
 }
 
 /**
- * Upload a file.
- * Railway has no body size limit — send the whole file in one POST.
- * Progress is streamed back via SSE from the server.
+ * Upload a file using XHR so we get real upload progress.
+ *
+ * Progress mapping:
+ *   0 – 50 %  →  bytes leaving the browser  (xhr.upload.onprogress)
+ *  50 – 100 % →  server relaying to Telegram (SSE events in XHR response)
  */
-export async function apiUploadFile(
+export function apiUploadFile(
   userId: string,
   _sessionToken: string,
   file: File,
   folderId: string | null,
   onProgress?: (pct: number) => void
-) {
-  const form = new FormData()
-  form.append('file', file, file.name)
-  if (folderId) form.append('folderId', folderId)
+): Promise<{ file: any }> {
+  return new Promise((resolve, reject) => {
+    const form = new FormData()
+    form.append('file', file, file.name)
+    if (folderId) form.append('folderId', folderId)
 
-  const response = await fetch(`${API_BASE}/api/simple/upload`, {
-    method: 'POST',
-    headers: authHeaders(userId),
-    body: form,
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${API_BASE}/api/simple/upload`)
+    xhr.setRequestHeader('x-user-id', userId)
+
+    // ── Phase 1: browser → server (real network bytes) ──────────────────
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable || !onProgress) return
+      // Map 0–100% of the network upload → 0–50% of the UI bar
+      const pct = Math.round((e.loaded / e.total) * 50)
+      onProgress(pct)
+    }
+
+    // ── Phase 2: server → Telegram (SSE events in the response body) ────
+    let sseBuffer = ''
+
+    xhr.onprogress = () => {
+      // responseText grows as SSE chunks arrive; process the new portion
+      const newText = xhr.responseText.slice(sseBuffer.length)
+      sseBuffer = xhr.responseText
+
+      for (const event of parseSSEChunk(newText)) {
+        if (event.type === 'progress' && onProgress) {
+          // Server reports 0–100 for its Telegram upload; map to 50–99 in UI
+          const pct = 50 + Math.round((event.pct / 100) * 49)
+          onProgress(pct)
+        } else if (event.type === 'done') {
+          if (onProgress) onProgress(100)
+          resolve({ file: event.file })
+        } else if (event.type === 'error') {
+          reject(new Error(event.error ?? 'Upload failed'))
+        }
+      }
+    }
+
+    xhr.onload = () => {
+      // Final parse in case the last SSE chunk arrived with onload
+      for (const event of parseSSEChunk(xhr.responseText.slice(sseBuffer.length))) {
+        if (event.type === 'done') { if (onProgress) onProgress(100); resolve({ file: event.file }); return }
+        if (event.type === 'error') { reject(new Error(event.error ?? 'Upload failed')); return }
+      }
+      // If we never got a 'done' event, treat as error
+      if (xhr.status !== 200) reject(new Error(`Upload failed (HTTP ${xhr.status})`))
+    }
+
+    xhr.onerror = () => reject(new Error('Network error during upload'))
+    xhr.ontimeout = () => reject(new Error('Upload timed out'))
+
+    xhr.send(form)
   })
-
-  const event = await readSSE(response, onProgress)
-  return { file: event.file }
 }
 
 export async function apiDeleteFile(userId: string, _sessionToken: string, fileId: string) {
