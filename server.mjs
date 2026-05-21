@@ -35,6 +35,7 @@ import { TelegramClient, Api }  from 'telegram'
 import { StringSession }        from 'telegram/sessions/index.js'
 
 const __dir  = dirname(fileURLToPath(import.meta.url))
+const DIST   = join(__dir, 'dist')
 
 // ── Postgres ──────────────────────────────────────────────────────────────
 let _pool = null
@@ -431,6 +432,14 @@ app.delete('/api/simple/files/:fileId', requireUser, async (req, res) => {
 // ── Health check ──────────────────────────────────────────────────────────
 // Railway pings this after every deploy to confirm the server is ready.
 app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }))
+
+// ── Serve React frontend ───────────────────────────────────────────────────
+// File upload/download routes are REMOVED — browser talks to Telegram directly.
+// The only Railway egress is the JS bundle (~764 KB gzipped) and tiny JSON.
+// That's ~$0.00004 per page load at $0.05/GB — effectively free.
+app.use(express.static(DIST))
+// Express v5 requires '/{*splat}' instead of bare '*'
+app.get('/{*splat}', (_req, res) => res.sendFile(join(DIST, 'index.html')))
 
 // ── Start ─────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000   // Railway sets PORT automatically

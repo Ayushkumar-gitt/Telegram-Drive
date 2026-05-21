@@ -8,9 +8,8 @@
 #   Files     → Browser ↔ Telegram directly via GramJS (zero Railway egress)
 
 [build]
-# No frontend build needed on Railway — frontend is on Cloudflare Pages.
-# Just install dependencies.
-buildCommand = "npm install"
+# Build React frontend (with globalThis.Buffer polyfill) into dist/
+buildCommand = "npm run build"
 
 [deploy]
 startCommand = "node server.mjs"
