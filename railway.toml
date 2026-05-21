@@ -1,10 +1,16 @@
 # railway.toml
 # Railway reads this file to understand how to build and start your app.
 # Docs: https://docs.railway.com/config-as-code/reference
+#
+# Architecture:
+#   Frontend  → Cloudflare Pages (free, unlimited bandwidth, zero egress)
+#   API only  → Railway (tiny JSON only, egress cost ~$0)
+#   Files     → Browser ↔ Telegram directly via GramJS (zero Railway egress)
 
 [build]
-# Build the React frontend first, then Railway runs the start command
-buildCommand = "npm run build"
+# No frontend build needed on Railway — frontend is on Cloudflare Pages.
+# Just install dependencies.
+buildCommand = "npm install"
 
 [deploy]
 startCommand = "node server.mjs"
