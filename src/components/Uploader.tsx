@@ -8,7 +8,7 @@ import { useAuthStore } from '../store/auth'
 import { useFileSystemStore } from '../store/filesystem'
 import { getTelegramClient } from '../lib/telegram'
 import { uploadFileToTelegram } from '../lib/upload'
-import { apiUploadFile } from '../lib/simpleUserApi'
+import { apiGetRootChannel, apiSaveFileMeta } from '../lib/simpleUserApi'
 import { v4 as uuidv4 } from 'uuid'
 import { toast } from 'react-hot-toast'
 
@@ -52,16 +52,54 @@ export const Uploader = ({ currentFolderId }: UploaderProps) => {
         setTaskStatus(taskId, 'uploading')
 
         if (accountType === 'simple') {
-          // ── Simple user: server-side chunked upload (browser never touches Telegram) ─
-          // Large files are split into ≤3.5 MB chunks in apiUploadFile before
-          // each POST reaches Vercel, so the 4.5 MB body limit is never hit.
-          const result = await apiUploadFile(
-            userId, userId,
-            file,
-            currentFolderId,
+          // ── Simple user: upload DIRECTLY to Telegram via browser GramJS ──
+          // File bytes: Browser → Telegram  (zero Railway egress, zero Railway cost)
+          // Metadata:   Browser → Railway   (~200 bytes JSON — negligible)
+          if (!sessionString || !apiId || !apiHash) {
+            setTaskStatus(taskId, 'error', 'Not authenticated'); continue
+          }
+
+          // 1. Get/create the user's root storage channel (cached after first call)
+          let targetChannelId: string
+          let targetAccessHash: string | null
+
+          if (currentFolderId) {
+            // Upload into a specific folder
+            const folder = useFileSystemStore.getState().folders.find(f => f.id === currentFolderId)
+            if (!folder) { setTaskStatus(taskId, 'error', 'Folder not found'); continue }
+            targetChannelId = folder.channelId
+            targetAccessHash = folder.accessHash ?? null
+          } else {
+            // Upload into the root channel — fetch from Railway (tiny JSON)
+            const root = await apiGetRootChannel(userId)
+            targetChannelId = root.channelId
+            targetAccessHash = root.accessHash
+          }
+
+          // 2. Upload file bytes directly to Telegram (no Railway involved)
+          const client = await getTelegramClient(sessionString, apiId, apiHash)
+          const tgFile = await uploadFileToTelegram(
+            client, file, currentFolderId,
+            targetChannelId, targetAccessHash,
             (pct) => updateTaskProgress(taskId, pct)
           )
-          addFile(result.file)
+
+          // 3. Save only the metadata (~200 byte JSON) to Railway DB
+          await apiSaveFileMeta(userId, {
+            id:          tgFile.id,
+            name:        tgFile.name,
+            size:        tgFile.size,
+            mimeType:    tgFile.mimeType,
+            createdAt:   tgFile.createdAt,
+            folderId:    tgFile.folderId,
+            messageId:   tgFile.messageId,
+            channelId:   tgFile.channelId,
+            accessHash:  tgFile.accessHash,
+            isChunked:   tgFile.isChunked,
+            chunkMessageIds: (tgFile as any).chunkMessageIds,
+          })
+
+          addFile(tgFile)
           setTaskStatus(taskId, 'completed')
 
         } else {

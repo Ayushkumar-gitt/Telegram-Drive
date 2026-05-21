@@ -235,9 +235,15 @@ app.post('/api/user-login', async (req, res) => {
     if (row.password_hash !== hashPassword(password))
       return res.status(401).json({ error: 'Incorrect password.' })
 
-    // We do NOT return the admin session to the browser anymore.
-    // All Telegram operations stay server-side.
-    return res.json({ userId: row.user_id })
+    // Return admin TG credentials so the browser can upload/download
+    // DIRECTLY to Telegram — bypassing Railway entirely for file data.
+    // This eliminates Railway egress charges on uploads/downloads.
+    return res.json({
+      userId:             row.user_id,
+      adminApiId:         Number(process.env.ADMIN_API_ID),
+      adminApiHash:       process.env.ADMIN_API_HASH,
+      adminSessionString: process.env.ADMIN_SESSION_STRING,
+    })
   } catch (err) {
     console.error('login error:', err)
     return res.status(500).json({ error: 'Database error.' })
@@ -276,6 +282,54 @@ app.get('/api/simple/files', requireUser, async (req, res) => {
     return res.json({ files: filesRes.rows, folders: foldersRes.rows })
   } catch (err) {
     console.error('list files error:', err)
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/simple/root-channel  — ensure root storage channel exists & return its coords
+// Called by the browser before uploading so it knows which TG channel to send to.
+app.get('/api/simple/root-channel', requireUser, async (req, res) => {
+  try {
+    const client = await getTgClient()
+    const db = getPool()
+    const channel = await resolveOrCreateRootChannel(req.userId, client, db)
+    return res.json({
+      channelId:  channel.channel_id,
+      accessHash: channel.access_hash,
+    })
+  } catch (err) {
+    console.error('root-channel error:', err)
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/simple/files  — save file metadata after a direct browser→Telegram upload
+// The browser uploads the file bytes directly to Telegram (zero Railway egress),
+// then POSTs only the tiny metadata record here so we persist it in the DB.
+app.post('/api/simple/files', requireUser, async (req, res) => {
+  const { id, name, size, mimeType, createdAt, folderId,
+          messageId, channelId, accessHash, isChunked, chunkMessageIds } = req.body ?? {}
+  if (!id || !name || !messageId || !channelId)
+    return res.status(400).json({ error: 'id, name, messageId, channelId are required' })
+  try {
+    const db = getPool()
+    await db.query(
+      `INSERT INTO sc_user_files
+         (id, user_id, name, size, mime_type, created_at, folder_id,
+          message_id, channel_id, access_hash, is_chunked, chunk_ids)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       ON CONFLICT (id) DO NOTHING`,
+      [
+        id, req.userId, name, size ?? 0, mimeType ?? 'application/octet-stream',
+        createdAt ?? Date.now(), folderId ?? null,
+        messageId, channelId, accessHash ?? null,
+        isChunked ?? false,
+        chunkMessageIds ? JSON.stringify(chunkMessageIds) : null,
+      ]
+    )
+    return res.json({ ok: true, id })
+  } catch (err) {
+    console.error('save-file-meta error:', err)
     return res.status(500).json({ error: err.message })
   }
 })
