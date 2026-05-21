@@ -555,7 +555,8 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }))
 app.use(express.static(DIST))
 
 // SPA fallback: send index.html for any unknown route
-app.get('*', (_req, res) => {
+// Express v5 (path-to-regexp v8+) requires '/{*splat}' instead of bare '*'
+app.get('/{*splat}', (_req, res) => {
   res.sendFile(join(DIST, 'index.html'))
 })
 
