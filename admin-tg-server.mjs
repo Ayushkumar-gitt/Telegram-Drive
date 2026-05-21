@@ -275,7 +275,6 @@ app.post('/api/simple/upload', requireUser, upload.single('file'), async (req, r
   }
 })
 
-
 // ── DELETE /api/simple/files/:fileId ─────────────────────────────────────
 app.delete('/api/simple/files/:fileId', requireUser, async (req, res) => {
   try {
