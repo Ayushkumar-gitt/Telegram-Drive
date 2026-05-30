@@ -235,9 +235,15 @@ app.post('/api/user-login', async (req, res) => {
     if (row.password_hash !== hashPassword(password))
       return res.status(401).json({ error: 'Incorrect password.' })
 
-    // We do NOT return the admin session to the browser anymore.
-    // All Telegram operations stay server-side.
-    return res.json({ userId: row.user_id })
+    // Return admin TG credentials so the browser connects directly to Telegram.
+    // This eliminates Railway egress — file bytes flow Browser ↔ Telegram,
+    // never through Railway. Railway only handles lightweight JSON (auth + metadata).
+    return res.json({
+      userId: row.user_id,
+      adminApiId: Number(process.env.ADMIN_API_ID),
+      adminApiHash: process.env.ADMIN_API_HASH,
+      adminSessionString: process.env.ADMIN_SESSION_STRING,
+    })
   } catch (err) {
     console.error('login error:', err)
     return res.status(500).json({ error: 'Database error.' })
@@ -370,6 +376,51 @@ app.delete('/api/simple/files/:fileId', requireUser, async (req, res) => {
     return res.json({ success: true })
   } catch (err) {
     console.error('delete file error:', err)
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+// ── ──────────────────────────────────────────────────────────────────────
+//  SAVE FILE METADATA (browser uploaded directly to Telegram)
+// ── ──────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/simple/files/save-meta
+ *
+ * After the browser uploads a file directly to Telegram (zero Railway egress),
+ * it calls this endpoint to save the lightweight file metadata in the DB.
+ * Only a small JSON payload — never any file bytes.
+ */
+app.post('/api/simple/files/save-meta', requireUser, async (req, res) => {
+  try {
+    const { file: f } = req.body ?? {}
+    if (!f || !f.id || !f.name) return res.status(400).json({ error: 'Missing file metadata' })
+
+    const db = getPool()
+    await db.query(
+      `INSERT INTO sc_user_files
+        (id, user_id, name, size, mime_type, created_at, folder_id, message_id, channel_id, access_hash, is_chunked, chunk_ids, chunk_message_ids)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       ON CONFLICT (id) DO NOTHING`,
+      [
+        f.id,
+        req.userId,
+        f.name,
+        f.size ?? 0,
+        f.mimeType ?? 'application/octet-stream',
+        f.createdAt ?? Date.now(),
+        f.folderId ?? null,
+        f.messageId ?? null,
+        f.channelId ?? null,
+        f.accessHash ?? null,
+        f.isChunked ?? false,
+        f.chunkIds ? JSON.stringify(f.chunkIds) : null,
+        f.chunkMessageIds ? JSON.stringify(f.chunkMessageIds) : null,
+      ]
+    )
+    return res.json({ success: true })
+  } catch (err) {
+    console.error('save-meta error:', err)
     return res.status(500).json({ error: err.message })
   }
 })
