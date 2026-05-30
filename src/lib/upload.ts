@@ -115,16 +115,16 @@ async function directUploadFile(
               sender = await client.getSender(client.session.dcId)
               const request = isLarge
                 ? new Api.upload.SaveBigFilePart({
-                    fileId,
-                    filePart: partIndex,
-                    fileTotalParts: partCount,
-                    bytes: partBytes,
-                  })
+                  fileId,
+                  filePart: partIndex,
+                  fileTotalParts: partCount,
+                  bytes: partBytes,
+                })
                 : new Api.upload.SaveFilePart({
-                    fileId,
-                    filePart: partIndex,
-                    bytes: partBytes,
-                  })
+                  fileId,
+                  filePart: partIndex,
+                  bytes: partBytes,
+                })
               await sender.send(request)
             } catch (err: any) {
               if (sender && !sender.isConnected()) {
