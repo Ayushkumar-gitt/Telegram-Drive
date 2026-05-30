@@ -2,19 +2,11 @@ import { TelegramClient } from 'telegram'
 import { Api } from 'telegram'
 import { v4 as uuidv4 } from 'uuid'
 import { type TGFile } from '../store/filesystem'
-// Import Buffer from the 'buffer' package explicitly.
-// vite-plugin-node-polyfills redirects this to the SAME polyfill that
-// GramJS's `require('buffer')` resolves to in the bundled output.
-// This ensures `data instanceof Buffer` in GramJS's serializeBytes()
-// (generationHelpers.js:242) passes correctly.
-import { Buffer } from 'buffer'
-
-// Also ensure globalThis.Buffer is set — GramJS's CJS code accesses
-// Buffer as a global (not via import). If the polyfill's globals injection
-// didn't work, this guarantees it.
-if (typeof globalThis !== 'undefined' && !(globalThis as unknown as Record<string, unknown>).Buffer) {
-  (globalThis as unknown as Record<string, unknown>).Buffer = Buffer
-}
+// NOTE: We intentionally do NOT import Buffer from the 'buffer' package.
+// GramJS's serializeBytes() checks `data instanceof Buffer` using the
+// global Buffer set by vite-plugin-node-polyfills. If we import from
+// 'buffer' directly, we get a DIFFERENT Buffer class and instanceof fails
+// with: "Bytes or str expected, not Buffer".
 
 /**
  * Telegram allows up to 2GB per file via the Bot/User API.
@@ -53,12 +45,14 @@ function getPartSizeBytes(fileSize: number): number {
 /**
  * Read a slice of a browser File as a Buffer.
  * Uses file.slice() + blob.arrayBuffer() so we never load the whole file.
- * Returns the polyfilled Buffer (same class GramJS uses) so instanceof checks pass.
  */
-async function readFileSlice(file: File, start: number, end: number): Promise<Buffer> {
+async function readFileSlice(file: File, start: number, end: number): Promise<Uint8Array> {
   const blob = file.slice(start, end)
   const ab = await blob.arrayBuffer()
-  return Buffer.from(ab)
+  // Use the global Buffer (same as GramJS uses) — NOT the one from 'buffer' package
+  // Cast through unknown to avoid TS7017 (no index signature on globalThis)
+  const GlobalBuffer = (globalThis as unknown as { Buffer: { from(ab: ArrayBuffer): Uint8Array } }).Buffer
+  return GlobalBuffer.from(ab)
 }
 
 /**
@@ -115,16 +109,16 @@ async function directUploadFile(
               sender = await client.getSender(client.session.dcId)
               const request = isLarge
                 ? new Api.upload.SaveBigFilePart({
-                  fileId,
-                  filePart: partIndex,
-                  fileTotalParts: partCount,
-                  bytes: partBytes,
-                })
+                    fileId,
+                    filePart: partIndex,
+                    fileTotalParts: partCount,
+                    bytes: partBytes,
+                  })
                 : new Api.upload.SaveFilePart({
-                  fileId,
-                  filePart: partIndex,
-                  bytes: partBytes,
-                })
+                    fileId,
+                    filePart: partIndex,
+                    bytes: partBytes,
+                  })
               await sender.send(request)
             } catch (err: any) {
               if (sender && !sender.isConnected()) {
@@ -221,41 +215,22 @@ export const uploadFileToTelegram = async (
         new Api.DocumentAttributeFilename({ fileName: file.name })
       ]
 
-      // Send the uploaded file as a message.
-      // Wrapped in a retry loop because the WebSocket connection to Telegram
-      // can drop during the upload phase (especially on mobile networks).
-      // By the time all parts are uploaded (100%), the socket may be dead.
-      let result: any
-      for (let attempt = 0; attempt < 5; attempt++) {
-        try {
-          // Ensure connection is alive before sending
-          if (!client.connected) {
-            await client.connect()
-          }
-          result = await client.invoke(
-            new Api.messages.SendMedia({
-              peer: peer,
-              media: new Api.InputMediaUploadedDocument({
-                file: inputFile,
-                mimeType: mimeType,
-                attributes: attributes,
-                forceFile: true,
-              }),
-              message: file.name,
-              randomId: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)) as any,
-            })
-          )
-          break // success
-        } catch (err: any) {
-          console.warn(`SendMedia attempt ${attempt + 1} failed:`, err?.message)
-          if (attempt === 4) throw err
-          // Wait with exponential backoff, then reconnect
-          await new Promise(r => setTimeout(r, 2000 * (attempt + 1)))
-          try { await client.connect() } catch { /* reconnect best-effort */ }
-        }
-      }
+      // Send the uploaded file as a message
+      const result = await client.invoke(
+        new Api.messages.SendMedia({
+          peer: peer,
+          media: new Api.InputMediaUploadedDocument({
+            file: inputFile,
+            mimeType: mimeType,
+            attributes: attributes,
+            forceFile: true,
+          }),
+          message: file.name,
+          randomId: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)) as any,
+        })
+      )
 
-
+      // Extract the message ID from the result
       const messageId = extractMessageId(result)
 
       return {
@@ -303,31 +278,19 @@ export const uploadFileToTelegram = async (
           })
         ]
 
-        let result: any
-        for (let attempt = 0; attempt < 5; attempt++) {
-          try {
-            if (!client.connected) await client.connect()
-            result = await client.invoke(
-              new Api.messages.SendMedia({
-                peer: peer,
-                media: new Api.InputMediaUploadedDocument({
-                  file: inputFile,
-                  mimeType: mimeType,
-                  attributes: attributes,
-                  forceFile: true,
-                }),
-                message: `${file.name} (Part ${i + 1}/${totalChunks})`,
-                randomId: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)) as any,
-              })
-            )
-            break
-          } catch (err: any) {
-            console.warn(`SendMedia chunk ${i + 1} attempt ${attempt + 1} failed:`, err?.message)
-            if (attempt === 4) throw err
-            await new Promise(r => setTimeout(r, 2000 * (attempt + 1)))
-            try { await client.connect() } catch { /* reconnect best-effort */ }
-          }
-        }
+        const result = await client.invoke(
+          new Api.messages.SendMedia({
+            peer: peer,
+            media: new Api.InputMediaUploadedDocument({
+              file: inputFile,
+              mimeType: mimeType,
+              attributes: attributes,
+              forceFile: true,
+            }),
+            message: `${file.name} (Part ${i + 1}/${totalChunks})`,
+            randomId: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)) as any,
+          })
+        )
 
         chunkMessageIds.push(extractMessageId(result))
       }

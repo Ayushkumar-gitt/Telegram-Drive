@@ -137,18 +137,34 @@ export const Dashboard = () => {
 
   // ── Shared download handler ───────────────────────────────────────────────
   const handleDownload = async (file: TGFile) => {
-    // Both account types download directly from Telegram via GramJS.
-    // Simple users have admin TG creds stored in auth store from login.
-    // Zero Railway egress — file bytes go: Telegram → Browser directly.
-    if (!sessionString || !apiId || !apiHash) return
-    const { downloadFileFromTelegram } = await import('../lib/download')
-    const client = await getTelegramClient(sessionString, apiId, apiHash)
-    toast.promise(
-      downloadFileFromTelegram(client, file),
-      { loading: 'Downloading…', success: 'Download complete', error: 'Download failed' }
-    )
+    if (accountType === 'simple') {
+      if (!userId) return
+      const SIMPLE_API = import.meta.env.DEV ? 'http://localhost:3000' : ''
+      await toast.promise(
+        fetch(`${SIMPLE_API}/api/simple/download/${file.id}`, {
+          headers: { 'x-user-id': userId },
+        }).then(async (resp) => {
+          if (!resp.ok) throw new Error('Download failed')
+          const blob = await resp.blob()
+          const url  = URL.createObjectURL(blob)
+          const a    = document.createElement('a')
+          a.href = url; a.download = file.name
+          document.body.appendChild(a); a.click()
+          setTimeout(() => { URL.revokeObjectURL(url); a.remove() }, 1000)
+        }),
+        { loading: 'Downloading…', success: 'Download complete', error: 'Download failed' }
+      )
+      return
+    } else {
+      if (!sessionString || !apiId || !apiHash) return
+      const { downloadFileFromTelegram } = await import('../lib/download')
+      const client = await getTelegramClient(sessionString, apiId, apiHash)
+      toast.promise(
+        downloadFileFromTelegram(client, file),
+        { loading: 'Downloading...', success: 'Download complete', error: 'Download failed' }
+      )
+    }
   }
-
 
   // ── Shared delete handler ─────────────────────────────────────────────────
   const handleDelete = async (item: any, isFolder: boolean) => {

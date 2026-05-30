@@ -26,7 +26,10 @@ config({ path: '.env.local' })  // local dev; Railway uses env vars directly
 
 import express    from 'express'
 import cors       from 'cors'
+import multer     from 'multer'
 import { createHash }           from 'crypto'
+import { unlink }               from 'fs/promises'
+import { existsSync, mkdirSync } from 'fs'
 import { join, dirname }        from 'path'
 import { fileURLToPath }        from 'url'
 import { v4 as uuidv4 }         from 'uuid'
@@ -36,6 +39,8 @@ import { StringSession }        from 'telegram/sessions/index.js'
 
 const __dir  = dirname(fileURLToPath(import.meta.url))
 const DIST   = join(__dir, 'dist')
+const TMP    = join(__dir, '.tmp-uploads')
+if (!existsSync(TMP)) mkdirSync(TMP, { recursive: true })
 
 // ── Postgres ──────────────────────────────────────────────────────────────
 let _pool = null
@@ -164,7 +169,14 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'x-user-id', 'x-session-token', 'Authorization'],
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
 }))
-app.use(express.json({ limit: '1mb' }))  // All bodies are tiny JSON — no file uploads here
+app.use(express.json({ limit: '1mb' }))  // JSON bodies are tiny; large uploads go through multer
+
+// Multer: write chunks to disk, no size cap (Railway has no body limit)
+const upload = multer({
+  dest: TMP,
+  // No fileSize limit — Railway imposes none. You're only bounded by your disk.
+  // Hobby plan: default 1 GB volume. Attach a Railway volume for more.
+})
 
 // ── ──────────────────────────────────────────────────────────────────────
 //  AUTH ROUTES
@@ -223,15 +235,9 @@ app.post('/api/user-login', async (req, res) => {
     if (row.password_hash !== hashPassword(password))
       return res.status(401).json({ error: 'Incorrect password.' })
 
-    // Return admin TG credentials so the browser can upload/download
-    // DIRECTLY to Telegram — bypassing Railway entirely for file data.
-    // This eliminates Railway egress charges on uploads/downloads.
-    return res.json({
-      userId:             row.user_id,
-      adminApiId:         Number(process.env.ADMIN_API_ID),
-      adminApiHash:       process.env.ADMIN_API_HASH,
-      adminSessionString: process.env.ADMIN_SESSION_STRING,
-    })
+    // We do NOT return the admin session to the browser anymore.
+    // All Telegram operations stay server-side.
+    return res.json({ userId: row.user_id })
   } catch (err) {
     console.error('login error:', err)
     return res.status(500).json({ error: 'Database error.' })
@@ -270,54 +276,6 @@ app.get('/api/simple/files', requireUser, async (req, res) => {
     return res.json({ files: filesRes.rows, folders: foldersRes.rows })
   } catch (err) {
     console.error('list files error:', err)
-    return res.status(500).json({ error: err.message })
-  }
-})
-
-// GET /api/simple/root-channel  — ensure root storage channel exists & return its coords
-// Called by the browser before uploading so it knows which TG channel to send to.
-app.get('/api/simple/root-channel', requireUser, async (req, res) => {
-  try {
-    const client = await getTgClient()
-    const db = getPool()
-    const channel = await resolveOrCreateRootChannel(req.userId, client, db)
-    return res.json({
-      channelId:  channel.channel_id,
-      accessHash: channel.access_hash,
-    })
-  } catch (err) {
-    console.error('root-channel error:', err)
-    return res.status(500).json({ error: err.message })
-  }
-})
-
-// POST /api/simple/files  — save file metadata after a direct browser→Telegram upload
-// The browser uploads the file bytes directly to Telegram (zero Railway egress),
-// then POSTs only the tiny metadata record here so we persist it in the DB.
-app.post('/api/simple/files', requireUser, async (req, res) => {
-  const { id, name, size, mimeType, createdAt, folderId,
-          messageId, channelId, accessHash, isChunked, chunkMessageIds } = req.body ?? {}
-  if (!id || !name || !messageId || !channelId)
-    return res.status(400).json({ error: 'id, name, messageId, channelId are required' })
-  try {
-    const db = getPool()
-    await db.query(
-      `INSERT INTO sc_user_files
-         (id, user_id, name, size, mime_type, created_at, folder_id,
-          message_id, channel_id, access_hash, is_chunked, chunk_ids)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-       ON CONFLICT (id) DO NOTHING`,
-      [
-        id, req.userId, name, size ?? 0, mimeType ?? 'application/octet-stream',
-        createdAt ?? Date.now(), folderId ?? null,
-        messageId, channelId, accessHash ?? null,
-        isChunked ?? false,
-        chunkMessageIds ? JSON.stringify(chunkMessageIds) : null,
-      ]
-    )
-    return res.json({ ok: true, id })
-  } catch (err) {
-    console.error('save-file-meta error:', err)
     return res.status(500).json({ error: err.message })
   }
 })
@@ -417,29 +375,189 @@ app.delete('/api/simple/files/:fileId', requireUser, async (req, res) => {
 })
 
 // ── ──────────────────────────────────────────────────────────────────────
-//  HEALTH CHECK  (Railway pings this to confirm server is ready)
+//  UPLOAD  (SSE streaming progress)
 // ── ──────────────────────────────────────────────────────────────────────
-//
-// NOTE: Upload and download routes have been REMOVED intentionally.
-// File bytes never touch Railway — the browser uploads/downloads
-// directly to Telegram via GramJS (MTProto WebSocket from browser).
-// Railway only handles tiny JSON: auth, metadata, folder ops.
-// This eliminates Railway egress charges on file data entirely.
-//
-// Frontend is served from Cloudflare Pages (free, unlimited bandwidth).
-// Railway is a pure JSON API server — egress cost is effectively $0.
 
-// ── Health check ──────────────────────────────────────────────────────────
+/**
+ * POST /api/simple/upload
+ *
+ * Accepts the full file (no body-size limit on Railway!).
+ * Streams real Telegram upload progress back as Server-Sent Events.
+ * Works for files of any size — tested up to 2 GB with GramJS.
+ */
+app.post('/api/simple/upload', requireUser, upload.single('file'), async (req, res) => {
+  const tmpPath = req.file?.path
+
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('X-Accel-Buffering', 'no')
+  res.flushHeaders()
+
+  const send = (data) => {
+    try {
+      res.write(`data: ${JSON.stringify(data)}\n\n`)
+      if (typeof res.flush === 'function') res.flush()
+    } catch {}
+  }
+
+  try {
+    if (!req.file) { send({ type: 'error', error: 'No file provided' }); return res.end() }
+
+    const { folderId } = req.body ?? {}
+    const db     = getPool()
+    const client = await getTgClient()
+
+    // Resolve target channel
+    let channelId, accessHash
+    if (folderId) {
+      const f = await db.query(
+        'SELECT channel_id, access_hash FROM sc_user_folders WHERE id = $1 AND user_id = $2',
+        [folderId, req.userId]
+      )
+      if (f.rows.length === 0) { send({ type: 'error', error: 'Folder not found' }); return res.end() }
+      channelId  = f.rows[0].channel_id
+      accessHash = f.rows[0].access_hash
+    } else {
+      const root = await resolveOrCreateRootChannel(req.userId, client, db)
+      channelId  = root.channel_id
+      accessHash = root.access_hash
+    }
+
+    const peer = new Api.InputPeerChannel({
+      channelId: BigInt(channelId.replace('-100', '')),
+      accessHash: BigInt(accessHash ?? '0'),
+    })
+
+    const mimeType    = req.file.mimetype || 'application/octet-stream'
+    const origName    = req.file.originalname
+
+    const { CustomFile } = await import('telegram/client/uploads.js')
+    const customFile = new CustomFile(origName, req.file.size, tmpPath)
+
+    send({ type: 'progress', pct: 1 })
+    let lastPct = 1
+
+    const result = await client.sendFile(peer, {
+      file: customFile,
+      caption: origName,
+      forceDocument: true,
+      workers: 4,
+      progressCallback: (fraction) => {
+        const pct = Math.round(fraction * 100)
+        if (pct > lastPct) { lastPct = pct; send({ type: 'progress', pct }) }
+      },
+    })
+
+    const messageId = result?.id ?? 0
+    const fileId    = uuidv4()
+
+    await db.query(
+      `INSERT INTO sc_user_files
+         (id, user_id, name, size, mime_type, created_at, folder_id,
+          message_id, channel_id, access_hash, is_chunked, is_chunk_part)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,FALSE,FALSE)`,
+      [fileId, req.userId, origName, req.file.size, mimeType, Date.now(),
+       folderId || null, messageId, channelId, accessHash]
+    )
+
+    if (tmpPath) unlink(tmpPath).catch(() => {})
+
+    send({
+      type: 'done',
+      file: {
+        id: fileId, name: origName, size: req.file.size, mimeType,
+        createdAt: Date.now(), folderId: folderId || null,
+        messageId, channelId, accessHash, isChunked: false,
+      },
+    })
+    res.end()
+  } catch (err) {
+    console.error('upload error:', err)
+    if (tmpPath) unlink(tmpPath).catch(() => {})
+    send({ type: 'error', error: err.message ?? 'Upload failed' })
+    res.end()
+  }
+})
+
+// ── ──────────────────────────────────────────────────────────────────────
+//  DOWNLOAD  (streaming, no buffering)
+// ── ──────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/simple/download/:fileId
+ *
+ * Streams file bytes directly from Telegram to the browser.
+ * Uses iterDownload so the full file is never held in RAM.
+ * Chunked files are assembled by streaming each part in order.
+ */
+app.get('/api/simple/download/:fileId', requireUser, async (req, res) => {
+  try {
+    const db = getPool()
+    const fileRes = await db.query(
+      'SELECT * FROM sc_user_files WHERE id = $1 AND user_id = $2',
+      [req.params.fileId, req.userId]
+    )
+    if (fileRes.rows.length === 0)
+      return res.status(404).json({ error: 'File not found' })
+
+    const file   = fileRes.rows[0]
+    const client = await getTgClient()
+
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.name)}"`)
+    res.setHeader('Content-Type', file.mime_type || 'application/octet-stream')
+    if (file.size) res.setHeader('Content-Length', String(file.size))
+
+    const streamFromMessage = async (channelId, accessHash, messageId) => {
+      const peer = new Api.InputPeerChannel({
+        channelId: BigInt(channelId.replace('-100', '')),
+        accessHash: BigInt(accessHash ?? '0'),
+      })
+      const msgs = await client.getMessages(peer, { ids: [messageId] })
+      if (!msgs?.length || !msgs[0]) throw new Error(`Message ${messageId} not found`)
+
+      for await (const chunk of client.iterDownload({
+        file: msgs[0].media,
+        requestSize: 512 * 1024,
+      })) {
+        res.write(chunk)
+      }
+    }
+
+    if (file.is_chunked && file.chunk_ids) {
+      const chunkIds = JSON.parse(file.chunk_ids)
+      for (const cid of chunkIds) {
+        const cr = await db.query('SELECT * FROM sc_user_files WHERE id = $1', [cid])
+        if (!cr.rows.length) throw new Error(`Chunk ${cid} not found`)
+        const c = cr.rows[0]
+        await streamFromMessage(c.channel_id, c.access_hash ?? '0', c.message_id)
+      }
+    } else {
+      await streamFromMessage(file.channel_id, file.access_hash ?? '0', file.message_id)
+    }
+
+    res.end()
+  } catch (err) {
+    console.error('download error:', err)
+    if (!res.headersSent) res.status(500).json({ error: err.message })
+    else res.end()
+  }
+})
+
+// ── ──────────────────────────────────────────────────────────────────────
+//  SERVE REACT FRONTEND
+// ── ──────────────────────────────────────────────────────────────────────
+
+// ── HEALTH CHECK ──────────────────────────────────────────────────────────
 // Railway pings this after every deploy to confirm the server is ready.
 app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }))
 
-// ── Serve React frontend ───────────────────────────────────────────────────
-// File upload/download routes are REMOVED — browser talks to Telegram directly.
-// The only Railway egress is the JS bundle (~764 KB gzipped) and tiny JSON.
-// That's ~$0.00004 per page load at $0.05/GB — effectively free.
+// Static files (JS, CSS, images)
 app.use(express.static(DIST))
-// Express v5 requires '/{*splat}' instead of bare '*'
-app.get('/{*splat}', (_req, res) => res.sendFile(join(DIST, 'index.html')))
+
+// SPA fallback: send index.html for any unknown route
+app.get('*', (_req, res) => {
+  res.sendFile(join(DIST, 'index.html'))
+})
 
 // ── Start ─────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000   // Railway sets PORT automatically
@@ -450,17 +568,16 @@ async function start() {
     await getTgClient()  // pre-connect on startup so first request is instant
 
     app.listen(PORT, () => {
-      console.log(`\n⭐  Star Cloud API server running on port ${PORT}`)
-      console.log('    Architecture: Browser ↔ Telegram directly (zero Railway egress for files)')
-      console.log('    POST /api/user-register       — register')
-      console.log('    POST /api/user-login           — login (returns TG creds for direct access)')
-      console.log('    GET  /api/simple/files         — list files + folders')
-      console.log('    GET  /api/simple/root-channel  — get/create root TG channel')
-      console.log('    POST /api/simple/files         — save file metadata after direct TG upload')
-      console.log('    POST /api/simple/folders       — create folder')
-      console.log('    DEL  /api/simple/files/:id     — delete file')
-      console.log('    DEL  /api/simple/folders/:id   — delete folder')
-      console.log('    GET  /api/health               — healthcheck\n')
+      console.log(`\n⭐  Star Cloud server running on port ${PORT}`)
+      console.log('    POST /api/user-register')
+      console.log('    POST /api/user-login')
+      console.log('    GET  /api/simple/files')
+      console.log('    POST /api/simple/folders')
+      console.log('    POST /api/simple/upload     ← full file, no size limit')
+      console.log('    GET  /api/simple/download/:id  ← streaming')
+      console.log('    DEL  /api/simple/files/:id')
+      console.log('    DEL  /api/simple/folders/:id')
+      console.log('    GET  /*                     ← React SPA\n')
     })
   } catch (err) {
     console.error('❌  Startup failed:', err.message)

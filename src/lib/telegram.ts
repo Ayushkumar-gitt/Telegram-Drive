@@ -21,9 +21,7 @@ export const getTelegramClient = async (
   if (!client) {
     const session = new StringSession(sessionString)
     client = new TelegramClient(session, apiId, apiHash, {
-      connectionRetries: 10,
-      retryDelay: 2000,
-      autoReconnect: true,
+      connectionRetries: 5,
       useWSS: true,
     })
   }
@@ -49,9 +47,7 @@ export const initTelegramClient = async (
 ): Promise<string> => {
   const session = new StringSession('')
   client = new TelegramClient(session, apiId, apiHash, {
-    connectionRetries: 10,
-    retryDelay: 2000,
-    autoReconnect: true,
+    connectionRetries: 5,
     useWSS: true,
   })
 
