@@ -2,11 +2,19 @@ import { TelegramClient } from 'telegram'
 import { Api } from 'telegram'
 import { v4 as uuidv4 } from 'uuid'
 import { type TGFile } from '../store/filesystem'
-// NOTE: We intentionally do NOT import Buffer from the 'buffer' package.
-// GramJS's serializeBytes() checks `data instanceof Buffer` using the
-// global Buffer set by vite-plugin-node-polyfills. If we import from
-// 'buffer' directly, we get a DIFFERENT Buffer class and instanceof fails
-// with: "Bytes or str expected, not Buffer".
+// Import Buffer from the 'buffer' package explicitly.
+// vite-plugin-node-polyfills redirects this to the SAME polyfill that
+// GramJS's `require('buffer')` resolves to in the bundled output.
+// This ensures `data instanceof Buffer` in GramJS's serializeBytes()
+// (generationHelpers.js:242) passes correctly.
+import { Buffer } from 'buffer'
+
+// Also ensure globalThis.Buffer is set — GramJS's CJS code accesses
+// Buffer as a global (not via import). If the polyfill's globals injection
+// didn't work, this guarantees it.
+if (typeof globalThis !== 'undefined' && !(globalThis as unknown as Record<string, unknown>).Buffer) {
+  (globalThis as unknown as Record<string, unknown>).Buffer = Buffer
+}
 
 /**
  * Telegram allows up to 2GB per file via the Bot/User API.
@@ -43,23 +51,14 @@ function getPartSizeBytes(fileSize: number): number {
 }
 
 /**
- * Read a slice of a browser File as a Buffer-compatible Uint8Array.
+ * Read a slice of a browser File as a Buffer.
  * Uses file.slice() + blob.arrayBuffer() so we never load the whole file.
- *
- * Prefers globalThis.Buffer (set by vite-plugin-node-polyfills globals:true)
- * because GramJS's MTProto serializer expects a Buffer-compatible object.
- * Falls back to native Uint8Array if the polyfill isn't injected — Uint8Array
- * is the base class of Buffer so GramJS accepts it for the bytes fields.
+ * Returns the polyfilled Buffer (same class GramJS uses) so instanceof checks pass.
  */
-async function readFileSlice(file: File, start: number, end: number): Promise<Uint8Array> {
+async function readFileSlice(file: File, start: number, end: number): Promise<Buffer> {
   const blob = file.slice(start, end)
   const ab = await blob.arrayBuffer()
-  // Use the global Buffer injected by vite-plugin-node-polyfills (globals: true).
-  // This is the SAME Buffer GramJS uses internally, so instanceof checks pass.
-  const GlobalBuffer = (globalThis as any).Buffer
-  if (GlobalBuffer?.from) return GlobalBuffer.from(ab)
-  // Fallback: native Uint8Array (works with modern GramJS which accepts Uint8Array)
-  return new Uint8Array(ab)
+  return Buffer.from(ab)
 }
 
 /**
