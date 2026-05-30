@@ -221,20 +221,39 @@ export const uploadFileToTelegram = async (
         new Api.DocumentAttributeFilename({ fileName: file.name })
       ]
 
-      // Send the uploaded file as a message
-      const result = await client.invoke(
-        new Api.messages.SendMedia({
-          peer: peer,
-          media: new Api.InputMediaUploadedDocument({
-            file: inputFile,
-            mimeType: mimeType,
-            attributes: attributes,
-            forceFile: true,
-          }),
-          message: file.name,
-          randomId: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)) as any,
-        })
-      )
+      // Send the uploaded file as a message.
+      // Wrapped in a retry loop because the WebSocket connection to Telegram
+      // can drop during the upload phase (especially on mobile networks).
+      // By the time all parts are uploaded (100%), the socket may be dead.
+      let result: any
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          // Ensure connection is alive before sending
+          if (!client.connected) {
+            await client.connect()
+          }
+          result = await client.invoke(
+            new Api.messages.SendMedia({
+              peer: peer,
+              media: new Api.InputMediaUploadedDocument({
+                file: inputFile,
+                mimeType: mimeType,
+                attributes: attributes,
+                forceFile: true,
+              }),
+              message: file.name,
+              randomId: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)) as any,
+            })
+          )
+          break // success
+        } catch (err: any) {
+          console.warn(`SendMedia attempt ${attempt + 1} failed:`, err?.message)
+          if (attempt === 4) throw err
+          // Wait with exponential backoff, then reconnect
+          await new Promise(r => setTimeout(r, 2000 * (attempt + 1)))
+          try { await client.connect() } catch { /* reconnect best-effort */ }
+        }
+      }
 
       // Extract the message ID from the result
       const messageId = extractMessageId(result)
@@ -284,19 +303,31 @@ export const uploadFileToTelegram = async (
           })
         ]
 
-        const result = await client.invoke(
-          new Api.messages.SendMedia({
-            peer: peer,
-            media: new Api.InputMediaUploadedDocument({
-              file: inputFile,
-              mimeType: mimeType,
-              attributes: attributes,
-              forceFile: true,
-            }),
-            message: `${file.name} (Part ${i + 1}/${totalChunks})`,
-            randomId: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)) as any,
-          })
-        )
+        let result: any
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            if (!client.connected) await client.connect()
+            result = await client.invoke(
+              new Api.messages.SendMedia({
+                peer: peer,
+                media: new Api.InputMediaUploadedDocument({
+                  file: inputFile,
+                  mimeType: mimeType,
+                  attributes: attributes,
+                  forceFile: true,
+                }),
+                message: `${file.name} (Part ${i + 1}/${totalChunks})`,
+                randomId: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)) as any,
+              })
+            )
+            break
+          } catch (err: any) {
+            console.warn(`SendMedia chunk ${i + 1} attempt ${attempt + 1} failed:`, err?.message)
+            if (attempt === 4) throw err
+            await new Promise(r => setTimeout(r, 2000 * (attempt + 1)))
+            try { await client.connect() } catch { /* reconnect best-effort */ }
+          }
+        }
 
         chunkMessageIds.push(extractMessageId(result))
       }
