@@ -255,7 +255,7 @@ export const uploadFileToTelegram = async (
         }
       }
 
-      // Extract the message ID from the result
+
       const messageId = extractMessageId(result)
 
       return {
