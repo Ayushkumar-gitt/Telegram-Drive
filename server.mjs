@@ -235,15 +235,9 @@ app.post('/api/user-login', async (req, res) => {
     if (row.password_hash !== hashPassword(password))
       return res.status(401).json({ error: 'Incorrect password.' })
 
-    // Return admin TG credentials so the browser connects directly to Telegram.
-    // This eliminates Railway egress — file bytes flow Browser ↔ Telegram,
-    // never through Railway. Railway only handles lightweight JSON (auth + metadata).
-    return res.json({
-      userId: row.user_id,
-      adminApiId: Number(process.env.ADMIN_API_ID),
-      adminApiHash: process.env.ADMIN_API_HASH,
-      adminSessionString: process.env.ADMIN_SESSION_STRING,
-    })
+    // Simple users: all file operations (upload/download) go through
+    // this server, so no Telegram credentials are needed in the browser.
+    return res.json({ userId: row.user_id })
   } catch (err) {
     console.error('login error:', err)
     return res.status(500).json({ error: 'Database error.' })

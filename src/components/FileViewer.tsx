@@ -40,39 +40,50 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
       try {
         let blob: Blob | null = null
 
-        // Both simple and telegram users: download directly via browser GramJS.
-        // Zero Railway egress — Telegram → Browser.
-        if (!sessionString || !apiId || !apiHash) return
+        if (accountType === 'simple') {
+          // Simple user: stream preview via Railway server (reliable)
+          const SIMPLE_API = import.meta.env.DEV ? 'http://localhost:3000' : ''
+          const res = await fetch(
+            `${SIMPLE_API}/api/simple/download/${file.id}`,
+            { headers: { 'x-user-id': userId ?? '' } }
+          )
+          if (!res.ok) throw new Error(`Server returned ${res.status}`)
+          const arrayBuffer = await res.arrayBuffer()
+          blob = new Blob([arrayBuffer], { type: file.mimeType || 'application/octet-stream' })
 
-        const client = await getTelegramClient(sessionString, apiId, apiHash)
-        let peer: any = Number(file.channelId)
-        if (file.accessHash) {
-          const BigIntConstructor = (window as any).BigInt || globalThis.BigInt || Number
-          const { Api } = await import('telegram')
-          peer = new Api.InputPeerChannel({
-            channelId: BigIntConstructor(file.channelId.replace('-100', '')) as any,
-            accessHash: BigIntConstructor(file.accessHash) as any
-          })
-        }
-        let totalBuffer: Buffer | null = null
-        if (file.isChunked && file.chunkMessageIds?.length) {
-          const buffers: Buffer[] = []
-          for (const messageId of file.chunkMessageIds) {
-            const messages = await client.getMessages(peer, { ids: [messageId] })
+        } else {
+          // Telegram user: download via browser GramJS (own session)
+          if (!sessionString || !apiId || !apiHash) return
+          const client = await getTelegramClient(sessionString, apiId, apiHash)
+          let peer: any = Number(file.channelId)
+          if (file.accessHash) {
+            const BigIntConstructor = (window as any).BigInt || globalThis.BigInt || Number
+            const { Api } = await import('telegram')
+            peer = new Api.InputPeerChannel({
+              channelId: BigIntConstructor(file.channelId.replace('-100', '')) as any,
+              accessHash: BigIntConstructor(file.accessHash) as any
+            })
+          }
+          let totalBuffer: Buffer | null = null
+          if (file.isChunked && file.chunkMessageIds?.length) {
+            const buffers: Buffer[] = []
+            for (const messageId of file.chunkMessageIds) {
+              const messages = await client.getMessages(peer, { ids: [messageId] })
+              if (messages.length > 0 && messages[0].media) {
+                const buffer = await client.downloadMedia(messages[0], { workers: 4 } as any)
+                if (buffer) buffers.push(Buffer.from(buffer as ArrayBuffer))
+              }
+            }
+            if (buffers.length > 0) totalBuffer = Buffer.concat(buffers)
+          } else {
+            const messages = await client.getMessages(peer, { ids: [file.messageId] })
             if (messages.length > 0 && messages[0].media) {
               const buffer = await client.downloadMedia(messages[0], { workers: 4 } as any)
-              if (buffer) buffers.push(Buffer.from(buffer as ArrayBuffer))
+              if (buffer) totalBuffer = Buffer.from(buffer as ArrayBuffer)
             }
           }
-          if (buffers.length > 0) totalBuffer = Buffer.concat(buffers)
-        } else {
-          const messages = await client.getMessages(peer, { ids: [file.messageId] })
-          if (messages.length > 0 && messages[0].media) {
-            const buffer = await client.downloadMedia(messages[0], { workers: 4 } as any)
-            if (buffer) totalBuffer = Buffer.from(buffer as ArrayBuffer)
-          }
+          if (totalBuffer) blob = new Blob([totalBuffer], { type: file.mimeType })
         }
-        if (totalBuffer) blob = new Blob([totalBuffer], { type: file.mimeType })
 
         if (blob) {
           const url = URL.createObjectURL(blob)

@@ -8,7 +8,7 @@ import { useAuthStore } from '../store/auth'
 import { useFileSystemStore } from '../store/filesystem'
 import { getTelegramClient } from '../lib/telegram'
 import { uploadFileToTelegram } from '../lib/upload'
-// apiUploadFile no longer used — uploads go directly Browser → Telegram via GramJS
+import { apiUploadFile } from '../lib/simpleUserApi'
 import { v4 as uuidv4 } from 'uuid'
 import { toast } from 'react-hot-toast'
 
@@ -52,44 +52,17 @@ export const Uploader = ({ currentFolderId }: UploaderProps) => {
         setTaskStatus(taskId, 'uploading')
 
         if (accountType === 'simple') {
-          // ── Simple user: upload directly from browser → Telegram (zero Railway egress) ─
-          // The browser has the admin session string from login.
-          // File bytes flow: Browser → Telegram directly via GramJS.
-          // Only lightweight metadata JSON goes to the Railway server.
-          if (!sessionString || !apiId || !apiHash) { setTaskStatus(taskId, 'error', 'Not authenticated'); continue }
-
-          const rootChannel = await ensureChannelReady()
-          if (!rootChannel) { setTaskStatus(taskId, 'error', 'Could not reach storage'); continue }
-
-          const client = await getTelegramClient(sessionString, apiId, apiHash)
-
-          let targetChannelId = rootChannel.channelId
-          let targetAccessHash = rootChannel.accessHash
-          if (currentFolderId) {
-            const currentFolders = useFileSystemStore.getState().folders
-            const folder = currentFolders.find(f => f.id === currentFolderId)
-            if (folder) { targetChannelId = folder.channelId; targetAccessHash = folder.accessHash }
-          }
-
-          const tgFile = await uploadFileToTelegram(
-            client, file, currentFolderId,
-            targetChannelId, targetAccessHash,
+          // ── Simple user: upload via Railway server (reliable, no browser WebSocket issues) ─
+          // File goes: Browser → Railway → Telegram
+          // This avoids unreliable browser-to-Telegram WebSocket connections.
+          const result = await apiUploadFile(
+            userId, userId,
+            file,
+            currentFolderId,
             (pct) => updateTaskProgress(taskId, pct)
           )
-          addFile(tgFile)
+          addFile(result.file)
           setTaskStatus(taskId, 'completed')
-
-          // Save file metadata to Railway DB (lightweight JSON, no file bytes)
-          const SIMPLE_API = import.meta.env.DEV ? 'http://localhost:3000' : ''
-          try {
-            await fetch(`${SIMPLE_API}/api/simple/files/save-meta`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'x-user-id': userId },
-              body: JSON.stringify({ file: tgFile }),
-            })
-          } catch (metaErr) {
-            console.warn('Failed to save file metadata to server (file is uploaded to Telegram):', metaErr)
-          }
 
         } else {
           // ── Telegram user: upload via browser GramJS ────────────────────

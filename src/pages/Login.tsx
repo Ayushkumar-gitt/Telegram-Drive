@@ -34,7 +34,7 @@ async function apiSimpleLogin(email: string, password: string) {
   })
   const data = await res.json()
   if (!res.ok) throw new Error(data.error ?? 'Login failed')
-  return data as { userId: string; adminApiId: number; adminApiHash: string; adminSessionString: string }
+  return data as { userId: string }
 }
 
 async function apiTgRegister(userId: string, apiId: number, apiHash: string, phone: string) {
@@ -113,7 +113,7 @@ export const Login = () => {
       const data = await apiSimpleLogin(email.trim(), password)
       resetClient()                 // disconnect old TG session
       clearForNewSession()          // wipe any previous user's cached state
-      setSimpleSession(data.userId, data.adminApiId, data.adminApiHash, data.adminSessionString)
+      setSimpleSession(data.userId, 0, '', '')
       toast.success(`Welcome back, ${data.userId}!`)
       navigate('/dashboard')
     } catch (err: any) {

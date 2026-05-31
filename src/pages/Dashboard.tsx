@@ -54,13 +54,13 @@ export const Dashboard = () => {
 
   const parentRef = useRef<HTMLDivElement>(null)
 
-  // Initialize TG client and sync
-  // Both simple and telegram users connect to Telegram directly for uploads/downloads.
-  // Simple users also load their file list from the server DB.
+  // Initialize: load file list
+  // Simple users: load from Railway server DB (lightweight JSON, zero TG connection needed)
+  // Telegram users: connect to TG and sync from metadata channel
+  // TG connection for simple users happens lazily on first upload/download (in Uploader)
   useEffect(() => {
     if (accountType === 'simple') {
       if (!userId) return
-      // Load file list from Railway DB (lightweight JSON, no egress)
       apiListFiles(userId, userId)
         .then(data => {
           const { setFilesAndFolders } = useFileSystemStore.getState() as any
@@ -74,13 +74,6 @@ export const Dashboard = () => {
           }
         })
         .catch(err => console.error('Failed to load files:', err))
-
-      // Also eagerly connect to Telegram so uploads/downloads don't have a cold-start delay
-      if (sessionString && apiId && apiHash) {
-        getTelegramClient(sessionString, apiId, apiHash)
-          .then(client => syncFromMetadataChannel(client))
-          .catch(err => console.warn('TG preconnect failed (will retry on upload):', err.message))
-      }
     } else if (sessionString && apiId && apiHash) {
       getTelegramClient(sessionString, apiId, apiHash).then(client => {
         syncFromMetadataChannel(client)
@@ -144,15 +137,35 @@ export const Dashboard = () => {
 
   // ── Shared download handler ───────────────────────────────────────────────
   const handleDownload = async (file: TGFile) => {
-    // Both simple and telegram users download directly from Telegram via browser GramJS.
-    // Zero Railway egress — file bytes flow directly: Telegram → Browser.
-    if (!sessionString || !apiId || !apiHash) return
-    const { downloadFileFromTelegram } = await import('../lib/download')
-    const client = await getTelegramClient(sessionString, apiId, apiHash)
-    toast.promise(
-      downloadFileFromTelegram(client, file),
-      { loading: 'Downloading...', success: 'Download complete', error: 'Download failed' }
-    )
+    if (accountType === 'simple') {
+      // Simple user: download via Railway server (reliable TCP connection to Telegram)
+      if (!userId) return
+      const SIMPLE_API = import.meta.env.DEV ? 'http://localhost:3000' : ''
+      await toast.promise(
+        fetch(`${SIMPLE_API}/api/simple/download/${file.id}`, {
+          headers: { 'x-user-id': userId },
+        }).then(async (resp) => {
+          if (!resp.ok) throw new Error('Download failed')
+          const blob = await resp.blob()
+          const url  = URL.createObjectURL(blob)
+          const a    = document.createElement('a')
+          a.href = url; a.download = file.name
+          document.body.appendChild(a); a.click()
+          setTimeout(() => { URL.revokeObjectURL(url); a.remove() }, 1000)
+        }),
+        { loading: 'Downloading…', success: 'Download complete', error: 'Download failed' }
+      )
+      return
+    } else {
+      // Telegram user: download directly via browser GramJS (own session)
+      if (!sessionString || !apiId || !apiHash) return
+      const { downloadFileFromTelegram } = await import('../lib/download')
+      const client = await getTelegramClient(sessionString, apiId, apiHash)
+      toast.promise(
+        downloadFileFromTelegram(client, file),
+        { loading: 'Downloading...', success: 'Download complete', error: 'Download failed' }
+      )
+    }
   }
 
   // ── Shared delete handler ─────────────────────────────────────────────────
