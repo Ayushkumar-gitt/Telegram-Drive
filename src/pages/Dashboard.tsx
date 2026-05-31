@@ -54,19 +54,19 @@ export const Dashboard = () => {
 
   const parentRef = useRef<HTMLDivElement>(null)
 
-  // Initialize TG client and sync — only for telegram users
-  // Simple users load their file list from the server API
+  // Initialize TG client and sync
+  // Both simple and telegram users connect to Telegram directly for uploads/downloads.
+  // Simple users also load their file list from the server DB.
   useEffect(() => {
     if (accountType === 'simple') {
       if (!userId) return
+      // Load file list from Railway DB (lightweight JSON, no egress)
       apiListFiles(userId, userId)
         .then(data => {
-          // Merge server state into local store
           const { setFilesAndFolders } = useFileSystemStore.getState() as any
           if (setFilesAndFolders) {
             setFilesAndFolders(data.files, data.folders.filter((f: any) => f.id !== '__root__'))
           } else {
-            // Fallback: set individually
             data.files.forEach((f: any) => useFileSystemStore.getState().addFile(f))
             data.folders
               .filter((f: any) => f.id !== '__root__')
@@ -74,6 +74,13 @@ export const Dashboard = () => {
           }
         })
         .catch(err => console.error('Failed to load files:', err))
+
+      // Also eagerly connect to Telegram so uploads/downloads don't have a cold-start delay
+      if (sessionString && apiId && apiHash) {
+        getTelegramClient(sessionString, apiId, apiHash)
+          .then(client => syncFromMetadataChannel(client))
+          .catch(err => console.warn('TG preconnect failed (will retry on upload):', err.message))
+      }
     } else if (sessionString && apiId && apiHash) {
       getTelegramClient(sessionString, apiId, apiHash).then(client => {
         syncFromMetadataChannel(client)

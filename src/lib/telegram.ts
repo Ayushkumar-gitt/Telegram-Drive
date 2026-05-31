@@ -3,14 +3,16 @@ import { StringSession } from 'telegram/sessions'
 
 let client: TelegramClient | null = null
 let connectionPromise: Promise<any> | null = null
+let currentSessionKey: string | null = null  // track which session is active
 
 /** Call this on logout or before creating a new session so the singleton is recreated fresh */
 export const resetClient = () => {
   if (client) {
-    client.disconnect().catch(() => {})
+    try { client.disconnect() } catch { /* best-effort */ }
     client = null
   }
   connectionPromise = null
+  currentSessionKey = null
 }
 
 export const getTelegramClient = async (
@@ -18,18 +20,31 @@ export const getTelegramClient = async (
   apiId: number,
   apiHash: string
 ): Promise<TelegramClient> => {
+  // If the session/credentials changed (e.g., logout + new login), recreate the client
+  const sessionKey = `${apiId}:${sessionString.slice(0, 20)}`
+  if (client && currentSessionKey !== sessionKey) {
+    resetClient()
+  }
+
   if (!client) {
     const session = new StringSession(sessionString)
     client = new TelegramClient(session, apiId, apiHash, {
-      connectionRetries: 5,
+      connectionRetries: 10,
+      retryDelay: 2000,
       useWSS: true,
+      autoReconnect: true,
     })
+    currentSessionKey = sessionKey
   }
 
   if (!client.connected) {
     if (!connectionPromise) {
-      connectionPromise = client.connect().catch(e => {
+      connectionPromise = client.connect().then(() => {
+        connectionPromise = null  // clear so future disconnects can reconnect
+      }).catch(e => {
         connectionPromise = null
+        client = null  // force full recreate on next call
+        currentSessionKey = null
         throw e
       })
     }
