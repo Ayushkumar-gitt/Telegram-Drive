@@ -169,7 +169,7 @@ export const Dashboard = () => {
           updateDownloadProgress(taskId, (received / contentLength) * 100)
         }
 
-        const blob = new Blob(chunks, { type: file.mimeType || 'application/octet-stream' })
+        const blob = new Blob(chunks as BlobPart[], { type: file.mimeType || 'application/octet-stream' })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url; a.download = file.name

@@ -154,7 +154,7 @@ async function resolveOrCreateRootChannel(userId, client, db) {
 
   const result = await client.invoke(new Api.channels.CreateChannel({
     title: `StarCloud_Meta_${userId}`,
-    about: `Star Cloud storage for user ${userId}`,
+    about: `Cloud Space storage for user ${userId}`,
     broadcast: true,
   }))
   const ch = result.chats[0]
@@ -365,7 +365,7 @@ app.post('/api/simple/folders', requireUser, async (req, res) => {
     const channelTitle = `SC_${req.userId}_${folderName.trim()}`.slice(0, 255)
     const result = await client.invoke(new Api.channels.CreateChannel({
       title: channelTitle,
-      about: `Star Cloud folder for user ${req.userId}`,
+      about: `Cloud Space folder for user ${req.userId}`,
       broadcast: true,
     }))
     const ch = result.chats[0]
@@ -687,7 +687,7 @@ async function start() {
     await getTgClient()  // pre-connect on startup so first request is instant
 
     app.listen(PORT, () => {
-      console.log(`\n⭐  Star Cloud server running on port ${PORT}`)
+      console.log(`\n⭐  Cloud Space server running on port ${PORT}`)
       console.log('    GET  /api/tg-credentials    ← admin API ID/Hash for phone+OTP login')
       console.log('    POST /api/register          ← Telegram user registration')
       console.log('    GET  /api/lookup            ← Telegram user lookup')
