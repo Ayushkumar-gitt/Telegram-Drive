@@ -119,17 +119,17 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
         className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 p-4"
       >
         {/* Header */}
-        <div className="absolute top-0 left-0 right-0 p-4 flex items-center justify-between bg-gradient-to-b from-black/50 to-transparent z-10 text-white">
-          <div className="flex flex-col">
-            <span className="font-medium truncate max-w-md">{file.name}</span>
+        <div className="absolute top-0 left-0 right-0 p-3 sm:p-4 flex items-center justify-between bg-gradient-to-b from-black/80 via-black/50 to-transparent z-10 text-white">
+          <div className="flex flex-col min-w-0 flex-1 mr-3">
+            <span className="font-medium truncate max-w-[60vw] sm:max-w-md text-sm sm:text-base">{file.name}</span>
             <span className="text-xs text-gray-300">{(file.size / 1024 / 1024).toFixed(2)} MB</span>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-4 flex-shrink-0">
             {fileUrl && (
               <a
                 href={fileUrl}
                 download={file.name}
-                className="p-2 hover:bg-white/10 rounded-full transition-colors"
+                className="p-2.5 bg-white/10 hover:bg-white/20 rounded-full transition-colors"
                 title="Download"
               >
                 <Download className="w-5 h-5" />
@@ -137,7 +137,7 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
             )}
             <button
               onClick={onClose}
-              className="p-2 hover:bg-white/10 rounded-full transition-colors"
+              className="p-2.5 bg-white/20 hover:bg-white/30 rounded-full transition-colors"
             >
               <X className="w-6 h-6" />
             </button>

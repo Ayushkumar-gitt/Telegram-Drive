@@ -212,17 +212,23 @@ app.post('/api/register', async (req, res) => {
 
   try {
     const db = getPool()
-    const existing = await db.query(
-      'SELECT phone FROM tg_cloud_users WHERE user_id = $1', [userId]
+
+    // Check if userId already exists
+    const existingId = await db.query(
+      'SELECT user_id FROM tg_cloud_users WHERE user_id = $1', [userId]
     )
-    if (existing.rows.length > 0 && existing.rows[0].phone !== phone)
-      return res.status(409).json({ error: 'User ID already taken by another account' })
+    if (existingId.rows.length > 0)
+      return res.status(409).json({ error: 'Account already exists with this User ID. Please go to Sign In.' })
+
+    // Check if phone number already registered
+    const existingPhone = await db.query(
+      'SELECT user_id FROM tg_cloud_users WHERE phone = $1', [phone]
+    )
+    if (existingPhone.rows.length > 0)
+      return res.status(409).json({ error: `Account already exists with this phone number (User ID: ${existingPhone.rows[0].user_id}). Please go to Sign In.` })
 
     await db.query(
-      `INSERT INTO tg_cloud_users (user_id, api_id, api_hash, phone)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (user_id) DO UPDATE
-         SET api_id = EXCLUDED.api_id, api_hash = EXCLUDED.api_hash, phone = EXCLUDED.phone`,
+      `INSERT INTO tg_cloud_users (user_id, api_id, api_hash, phone) VALUES ($1, $2, $3, $4)`,
       [userId, Number(apiId), apiHash, phone]
     )
     console.log(`✅  Registered TG user: ${userId}`)

@@ -82,7 +82,7 @@ export const SimpleLogin = () => {
       clearForNewSession()
       setSimpleSession(data.userId, 0, '', '')
       toast.success(`Welcome back, ${data.userId}!`)
-      navigate('/dashboard')
+      navigate('/dashboard', { replace: true })
     } catch (err: any) {
       toast.error(err.message || 'Login failed')
     } finally { setIsLoading(false) }

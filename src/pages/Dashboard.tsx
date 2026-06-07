@@ -21,7 +21,9 @@ import {
   Trash2 as TrashIcon,
   User,
   LayoutGrid,
-  List as ListIcon
+  List as ListIcon,
+  Menu,
+  X
 } from 'lucide-react'
 import { Api } from 'telegram'
 import { v4 as uuidv4 } from 'uuid'
@@ -53,6 +55,7 @@ export const Dashboard = () => {
   const [newFolderName, setNewFolderName] = useState('')
   const [viewingFile, setViewingFile] = useState<TGFile | null>(null)
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
+  const [drawerOpen, setDrawerOpen] = useState(false)
 
   const parentRef = useRef<HTMLDivElement>(null)
 
@@ -227,7 +230,11 @@ export const Dashboard = () => {
     if (searchQuery) {
       const q = searchQuery.toLowerCase()
       filteredFolders = []  // Don't show folders in search results
-      filteredFiles = files.filter(f => f.name.toLowerCase().includes(q))
+      // When inside a folder, search only files in that folder
+      const scopedFiles = currentFolderId
+        ? files.filter(f => f.folderId === currentFolderId)
+        : files
+      filteredFiles = scopedFiles.filter(f => f.name.toLowerCase().includes(q))
     } else {
       filteredFiles = files.filter(f => f.folderId === currentFolderId)
       filteredFolders = currentFolderId ? [] : folders
@@ -260,35 +267,35 @@ export const Dashboard = () => {
     <div className="h-screen flex flex-col bg-neutral-50 dark:bg-[#050505] text-black dark:text-white font-sans">
       {/* Header */}
       <header className="bg-white/80 dark:bg-[#0a0a0a]/80 backdrop-blur-md border-b border-neutral-200 dark:border-white/10 p-4 sticky top-0 z-20">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 sm:gap-4">
+          <div className="flex items-center gap-2 sm:gap-4 min-w-0">
             {currentFolderId && (
               <button
                 onClick={() => setCurrentFolderId(null)}
-                className="p-2 hover:bg-neutral-100 dark:hover:bg-white/10 rounded-full transition-colors text-neutral-500 hover:text-black dark:hover:text-white"
+                className="p-2 hover:bg-neutral-100 dark:hover:bg-white/10 rounded-full transition-colors text-neutral-500 hover:text-black dark:hover:text-white flex-shrink-0"
               >
                 <ArrowLeft className="w-5 h-5" />
               </button>
             )}
-            <h1 className="text-xl font-bold tracking-tight">
+            <h1 className="text-lg sm:text-xl font-bold tracking-tight truncate">
               {currentFolderId
                 ? folders.find(f => f.id === currentFolderId)?.name
                 : 'Cloud Space'}
             </h1>
           </div>
 
-          <div className="flex-1 max-w-xl relative">
+          <div className="flex-1 max-w-xl relative hidden sm:block">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-neutral-400" />
             <input
               type="text"
-              placeholder="Search files and folders..."
+              placeholder={currentFolderId ? 'Search in this folder...' : 'Search files...'}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-10 pr-4 py-2.5 bg-neutral-100 dark:bg-white/5 border border-transparent dark:border-white/5 rounded-xl focus:ring-2 focus:ring-neutral-200 dark:focus:ring-white/20 focus:border-transparent outline-none transition-all placeholder:text-neutral-400"
             />
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
             <div className="hidden md:flex items-center bg-neutral-100 dark:bg-white/10 p-1 rounded-lg">
               <button
                 onClick={() => setViewMode('grid')}
@@ -309,35 +316,122 @@ export const Dashboard = () => {
             {!currentFolderId && (
               <button
                 onClick={() => setIsCreatingFolder(true)}
-                className="p-2.5 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-white/10 rounded-xl transition-colors flex items-center gap-2"
+                className="hidden sm:flex p-2.5 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-white/10 rounded-xl transition-colors items-center gap-2"
               >
                 <FolderPlus className="w-5 h-5" />
-                <span className="hidden sm:inline">New Folder</span>
+                <span className="hidden lg:inline">New Folder</span>
               </button>
             )}
             <button
               onClick={() => document.getElementById('global-file-input')?.click()}
-              className="bg-black dark:bg-white hover:bg-neutral-800 dark:hover:bg-neutral-200 text-white dark:text-black px-4 py-2.5 rounded-xl transition-colors shadow-sm flex items-center gap-2 font-medium"
+              className="bg-black dark:bg-white hover:bg-neutral-800 dark:hover:bg-neutral-200 text-white dark:text-black px-3 sm:px-4 py-2.5 rounded-xl transition-colors shadow-sm flex items-center gap-2 font-medium"
             >
               <Plus className="w-5 h-5" />
               <span className="hidden sm:inline">Upload</span>
             </button>
             {userId && (
-              <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-neutral-100 dark:bg-white/10 text-neutral-600 dark:text-neutral-300 border border-neutral-200 dark:border-white/10">
+              <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-neutral-100 dark:bg-white/10 text-neutral-600 dark:text-neutral-300 border border-neutral-200 dark:border-white/10">
                 <User className="w-4 h-4" />
                 {userId}
               </div>
             )}
             <button
               onClick={handleLogout}
-              className="p-2.5 text-neutral-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-xl transition-colors ml-1"
+              className="hidden sm:flex p-2.5 text-neutral-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-xl transition-colors ml-1"
               title="Logout"
             >
               <LogOut className="w-5 h-5" />
             </button>
+            {/* Mobile hamburger */}
+            <button
+              onClick={() => setDrawerOpen(true)}
+              className="sm:hidden p-2.5 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-white/10 rounded-xl transition-colors"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Mobile search bar — below header row */}
+        <div className="sm:hidden mt-3">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
+            <input
+              type="text"
+              placeholder={currentFolderId ? 'Search in this folder...' : 'Search files...'}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-9 pr-4 py-2 bg-neutral-100 dark:bg-white/5 border border-transparent dark:border-white/5 rounded-xl focus:ring-2 focus:ring-neutral-200 dark:focus:ring-white/20 outline-none transition-all placeholder:text-neutral-400 text-sm"
+            />
           </div>
         </div>
       </header>
+
+      {/* Mobile Drawer */}
+      <AnimatePresence>
+        {drawerOpen && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/50 z-40"
+              onClick={() => setDrawerOpen(false)}
+            />
+            <motion.div
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+              className="fixed top-0 right-0 h-full w-72 bg-white dark:bg-[#111] border-l border-neutral-200 dark:border-white/10 z-50 flex flex-col shadow-2xl"
+            >
+              <div className="flex items-center justify-between p-4 border-b border-neutral-200 dark:border-white/10">
+                <h2 className="font-semibold text-lg">Menu</h2>
+                <button onClick={() => setDrawerOpen(false)} className="p-2 hover:bg-neutral-100 dark:hover:bg-white/10 rounded-xl transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="flex-1 p-4 space-y-2">
+                {userId && (
+                  <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-neutral-100 dark:bg-white/5 border border-neutral-200 dark:border-white/10 mb-4">
+                    <User className="w-5 h-5 text-neutral-500" />
+                    <span className="font-medium text-sm truncate">{userId}</span>
+                  </div>
+                )}
+
+                {!currentFolderId && (
+                  <button
+                    onClick={() => { setDrawerOpen(false); setIsCreatingFolder(true) }}
+                    className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-neutral-100 dark:hover:bg-white/10 transition-colors text-left"
+                  >
+                    <FolderPlus className="w-5 h-5 text-neutral-500" />
+                    <span className="font-medium text-sm">New Folder</span>
+                  </button>
+                )}
+
+                <button
+                  onClick={() => { setDrawerOpen(false); setViewMode(viewMode === 'grid' ? 'list' : 'grid') }}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-neutral-100 dark:hover:bg-white/10 transition-colors text-left"
+                >
+                  {viewMode === 'grid' ? <ListIcon className="w-5 h-5 text-neutral-500" /> : <LayoutGrid className="w-5 h-5 text-neutral-500" />}
+                  <span className="font-medium text-sm">{viewMode === 'grid' ? 'List View' : 'Grid View'}</span>
+                </button>
+              </div>
+
+              <div className="p-4 border-t border-neutral-200 dark:border-white/10">
+                <button
+                  onClick={() => { setDrawerOpen(false); handleLogout() }}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-red-50 dark:hover:bg-red-500/10 text-red-500 transition-colors text-left"
+                >
+                  <LogOut className="w-5 h-5" />
+                  <span className="font-medium text-sm">Logout</span>
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
       {/* Main Content Area */}
       <main className="flex-1 overflow-hidden flex flex-col max-w-7xl mx-auto w-full p-4">
@@ -453,7 +547,7 @@ export const Dashboard = () => {
                       <div className="text-sm text-neutral-500 dark:text-neutral-400">
                         {item.createdAt ? format(new Date(item.createdAt), 'MMM d, yyyy') : '--'}
                       </div>
-                      <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex justify-end gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                       {!isFolder && (
                           <button
                             onClick={(e) => { e.stopPropagation(); handleDownload(item as TGFile) }}
@@ -504,7 +598,7 @@ export const Dashboard = () => {
                     </div>
 
                     {/* Action buttons overlay for grid */}
-                    <div className="absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="absolute top-2 right-2 flex flex-col gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                       {!isFolder && (
                           <button
                             onClick={(e) => { e.stopPropagation(); handleDownload(item as TGFile) }}

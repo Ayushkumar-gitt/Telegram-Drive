@@ -118,7 +118,7 @@ export const Login = () => {
       saveProfile({ userId: uid, apiId: aid, apiHash: ahash, phone: ph, createdAt: Date.now() })
       setSessionString(sessionString)
       toast.success(`Welcome, ${uid}!`)
-      navigate('/dashboard')
+      navigate('/dashboard', { replace: true })
     } catch (err: any) {
       toast.error(err.message || 'Authentication failed')
       setMode('tg-signin')
