@@ -20,9 +20,9 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 5000000 // Increase limit to 5MB
       },
       manifest: {
-        name: 'Telegram Cloud Storage',
-        short_name: 'TG Cloud',
-        description: 'Unlimited Cloud Storage via Telegram',
+        name: 'Cloud Space',
+        short_name: 'Cloud Space',
+        description: 'Unlimited Cloud Storage powered by Telegram',
         theme_color: '#ffffff',
         icons: [
           {

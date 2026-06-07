@@ -66,6 +66,15 @@ async function ensureTables() {
     )
   `)
   await db.query(`
+    CREATE TABLE IF NOT EXISTS tg_cloud_users (
+      user_id    VARCHAR(20)  PRIMARY KEY,
+      api_id     INTEGER      NOT NULL,
+      api_hash   TEXT         NOT NULL,
+      phone      TEXT         NOT NULL,
+      created_at TIMESTAMPTZ  DEFAULT NOW()
+    )
+  `)
+  await db.query(`
     CREATE TABLE IF NOT EXISTS sc_user_files (
       id             TEXT    PRIMARY KEY,
       user_id        TEXT    NOT NULL,
@@ -181,6 +190,70 @@ const upload = multer({
 // ── ──────────────────────────────────────────────────────────────────────
 //  AUTH ROUTES
 // ── ──────────────────────────────────────────────────────────────────────
+
+// GET /api/tg-credentials — returns the admin API_ID and API_HASH
+// so the browser can initiate GramJS login for any user with just phone + OTP
+app.get('/api/tg-credentials', (_req, res) => {
+  const apiId = process.env.ADMIN_API_ID
+  const apiHash = process.env.ADMIN_API_HASH
+  if (!apiId || !apiHash) {
+    return res.status(500).json({ error: 'Admin Telegram credentials not configured.' })
+  }
+  return res.json({ apiId: Number(apiId), apiHash })
+})
+
+// POST /api/register — Telegram users store their profile (userId, apiId, apiHash, phone)
+app.post('/api/register', async (req, res) => {
+  const { userId, apiId, apiHash, phone } = req.body ?? {}
+  if (!userId || !apiId || !apiHash || !phone)
+    return res.status(400).json({ error: 'Missing required fields' })
+  if (!/^[a-zA-Z0-9_]{3,20}$/.test(userId))
+    return res.status(400).json({ error: 'Invalid userId: 3–20 chars, letters/numbers/_ only' })
+
+  try {
+    const db = getPool()
+    const existing = await db.query(
+      'SELECT phone FROM tg_cloud_users WHERE user_id = $1', [userId]
+    )
+    if (existing.rows.length > 0 && existing.rows[0].phone !== phone)
+      return res.status(409).json({ error: 'User ID already taken by another account' })
+
+    await db.query(
+      `INSERT INTO tg_cloud_users (user_id, api_id, api_hash, phone)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (user_id) DO UPDATE
+         SET api_id = EXCLUDED.api_id, api_hash = EXCLUDED.api_hash, phone = EXCLUDED.phone`,
+      [userId, Number(apiId), apiHash, phone]
+    )
+    console.log(`✅  Registered TG user: ${userId}`)
+    return res.json({ success: true })
+  } catch (err) {
+    console.error('register error:', err)
+    return res.status(500).json({ error: 'Database error.' })
+  }
+})
+
+// GET /api/lookup — look up a Telegram user's stored credentials by userId
+app.get('/api/lookup', async (req, res) => {
+  const { userId } = req.query
+  if (!userId) return res.status(400).json({ error: 'userId is required' })
+
+  try {
+    const db = getPool()
+    const result = await db.query(
+      'SELECT api_id, api_hash, phone FROM tg_cloud_users WHERE user_id = $1',
+      [userId]
+    )
+    if (result.rows.length === 0)
+      return res.status(404).json({ error: 'User ID not found' })
+
+    const row = result.rows[0]
+    return res.json({ apiId: row.api_id, apiHash: row.api_hash, phone: row.phone })
+  } catch (err) {
+    console.error('lookup error:', err)
+    return res.status(500).json({ error: 'Database error.' })
+  }
+})
 
 // POST /api/user-register
 app.post('/api/user-register', async (req, res) => {
@@ -615,8 +688,11 @@ async function start() {
 
     app.listen(PORT, () => {
       console.log(`\n⭐  Star Cloud server running on port ${PORT}`)
-      console.log('    POST /api/user-register')
-      console.log('    POST /api/user-login')
+      console.log('    GET  /api/tg-credentials    ← admin API ID/Hash for phone+OTP login')
+      console.log('    POST /api/register          ← Telegram user registration')
+      console.log('    GET  /api/lookup            ← Telegram user lookup')
+      console.log('    POST /api/user-register     ← Simple email+pass registration')
+      console.log('    POST /api/user-login        ← Simple email+pass login')
       console.log('    GET  /api/simple/files')
       console.log('    POST /api/simple/folders')
       console.log('    POST /api/simple/upload     ← full file, no size limit')

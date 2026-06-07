@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useFileSystemStore, type TGFile, type TGFolder } from '../store/filesystem'
 import { useAuthStore } from '../store/auth'
+import { useDownloadStore } from '../store/download'
 import { getTelegramClient, resetClient } from '../lib/telegram'
 import { apiListFiles, apiCreateFolder, apiDeleteFile, apiDeleteFolder } from '../lib/simpleUserApi'
 import { format } from 'date-fns'
@@ -27,6 +28,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { toast } from 'react-hot-toast'
 import { useNavigate } from 'react-router-dom'
 import { Uploader } from '../components/Uploader'
+import { DownloadBar } from '../components/DownloadBar'
 import { FileViewer } from '../components/FileViewer'
 import { Thumbnail } from '../components/Thumbnail'
 
@@ -135,36 +137,57 @@ export const Dashboard = () => {
     }
   }
 
-  // ── Shared download handler ───────────────────────────────────────────────
+  // ── Shared download handler (with progress tracking) ─────────────────────
+  const { addTask: addDownloadTask, updateTaskProgress: updateDownloadProgress, setTaskStatus: setDownloadStatus } = useDownloadStore()
+
   const handleDownload = async (file: TGFile) => {
-    if (accountType === 'simple') {
-      // Simple user: download via Railway server (reliable TCP connection to Telegram)
-      if (!userId) return
-      const SIMPLE_API = import.meta.env.DEV ? 'http://localhost:3000' : ''
-      await toast.promise(
-        fetch(`${SIMPLE_API}/api/simple/download/${file.id}`, {
+    const taskId = uuidv4()
+    addDownloadTask({ id: taskId, fileName: file.name, fileSize: file.size, progress: 0, status: 'pending' })
+    setDownloadStatus(taskId, 'downloading')
+
+    try {
+      if (accountType === 'simple') {
+        // Simple user: download via server with progress via ReadableStream
+        if (!userId) return
+        const SIMPLE_API = import.meta.env.DEV ? 'http://localhost:3000' : ''
+        const resp = await fetch(`${SIMPLE_API}/api/simple/download/${file.id}`, {
           headers: { 'x-user-id': userId },
-        }).then(async (resp) => {
-          if (!resp.ok) throw new Error('Download failed')
-          const blob = await resp.blob()
-          const url  = URL.createObjectURL(blob)
-          const a    = document.createElement('a')
-          a.href = url; a.download = file.name
-          document.body.appendChild(a); a.click()
-          setTimeout(() => { URL.revokeObjectURL(url); a.remove() }, 1000)
-        }),
-        { loading: 'Downloading…', success: 'Download complete', error: 'Download failed' }
-      )
-      return
-    } else {
-      // Telegram user: download directly via browser GramJS (own session)
-      if (!sessionString || !apiId || !apiHash) return
-      const { downloadFileFromTelegram } = await import('../lib/download')
-      const client = await getTelegramClient(sessionString, apiId, apiHash)
-      toast.promise(
-        downloadFileFromTelegram(client, file),
-        { loading: 'Downloading...', success: 'Download complete', error: 'Download failed' }
-      )
+        })
+        if (!resp.ok) throw new Error('Download failed')
+
+        const contentLength = Number(resp.headers.get('content-length') || file.size)
+        const reader = resp.body?.getReader()
+        if (!reader) throw new Error('ReadableStream not supported')
+
+        const chunks: Uint8Array[] = []
+        let received = 0
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          chunks.push(value)
+          received += value.length
+          updateDownloadProgress(taskId, (received / contentLength) * 100)
+        }
+
+        const blob = new Blob(chunks, { type: file.mimeType || 'application/octet-stream' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url; a.download = file.name
+        document.body.appendChild(a); a.click()
+        setTimeout(() => { URL.revokeObjectURL(url); a.remove() }, 1000)
+
+      } else {
+        // Telegram user: download via browser GramJS with progress callback
+        if (!sessionString || !apiId || !apiHash) throw new Error('Not authenticated')
+        const { downloadFileFromTelegram } = await import('../lib/download')
+        const client = await getTelegramClient(sessionString, apiId, apiHash)
+        await downloadFileFromTelegram(client, file, (pct) => updateDownloadProgress(taskId, pct))
+      }
+
+      setDownloadStatus(taskId, 'completed')
+    } catch (err: any) {
+      setDownloadStatus(taskId, 'error', err.message)
+      toast.error(`Download failed: ${err.message}`)
     }
   }
 
@@ -203,7 +226,7 @@ export const Dashboard = () => {
 
     if (searchQuery) {
       const q = searchQuery.toLowerCase()
-      filteredFolders = folders.filter(f => f.name.toLowerCase().includes(q))
+      filteredFolders = []  // Don't show folders in search results
       filteredFiles = files.filter(f => f.name.toLowerCase().includes(q))
     } else {
       filteredFiles = files.filter(f => f.folderId === currentFolderId)
@@ -250,7 +273,7 @@ export const Dashboard = () => {
             <h1 className="text-xl font-bold tracking-tight">
               {currentFolderId
                 ? folders.find(f => f.id === currentFolderId)?.name
-                : 'Star Cloud'}
+                : 'Cloud Space'}
             </h1>
           </div>
 
@@ -428,7 +451,7 @@ export const Dashboard = () => {
                         {isFolder ? '--' : filesize((item as TGFile).size)}
                       </div>
                       <div className="text-sm text-neutral-500 dark:text-neutral-400">
-                        {format(item.createdAt, 'MMM d, yyyy')}
+                        {item.createdAt ? format(new Date(item.createdAt), 'MMM d, yyyy') : '--'}
                       </div>
                       <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       {!isFolder && (
@@ -476,7 +499,7 @@ export const Dashboard = () => {
                     <div className="w-full text-center">
                       <p className="text-sm font-medium truncate">{item.name}</p>
                       <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
-                        {isFolder ? format(item.createdAt, 'MMM d') : filesize((item as TGFile).size)}
+                        {isFolder ? (item.createdAt ? format(new Date(item.createdAt), 'MMM d') : '--') : filesize((item as TGFile).size)}
                       </p>
                     </div>
 
@@ -508,6 +531,7 @@ export const Dashboard = () => {
       </main>
 
       <Uploader currentFolderId={currentFolderId} />
+      <DownloadBar />
 
       <FileViewer
         file={viewingFile}

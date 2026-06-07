@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import { Login } from './pages/Login'
+import { SimpleLogin } from './pages/SimpleLogin'
 import { Dashboard } from './pages/Dashboard'
 import { useAuthStore } from './store/auth'
 
@@ -20,6 +21,7 @@ function App() {
       <Toaster position="top-right" />
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/simple" element={<SimpleLogin />} />
         <Route
           path="/dashboard"
           element={
