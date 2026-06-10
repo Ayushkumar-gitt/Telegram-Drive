@@ -18,6 +18,8 @@ export interface TGFile {
   thumbnailMessageId?: number
   isChunked?: boolean
   chunkMessageIds?: number[]
+  isTrashed?: boolean
+  trashedAt?: number
 }
 
 export interface TGFolder {
@@ -26,6 +28,8 @@ export interface TGFolder {
   createdAt: number
   channelId: string
   accessHash: string
+  isTrashed?: boolean
+  trashedAt?: number
 }
 
 export interface FileSystemState {
@@ -39,6 +43,11 @@ export interface FileSystemState {
   addFile: (file: TGFile) => void
   removeFile: (id: string) => void
   removeFolder: (id: string) => void
+  trashFile: (id: string) => void
+  trashFolder: (id: string) => void
+  restoreFile: (id: string) => void
+  restoreFolder: (id: string) => void
+  emptyTrash: () => void
   /** Call this on login/logout to wipe cached state so the next sync picks the correct user channel */
   clearForNewSession: () => void
   /** Bulk-load state from server (used by simple users) */
@@ -82,6 +91,29 @@ export const useFileSystemStore = create<FileSystemState>()(
       removeFolder: (id) => set((state) => ({
         folders: state.folders.filter(f => f.id !== id),
         files: state.files.filter(f => f.folderId !== id)
+      })),
+
+      trashFile: (id) => set((state) => ({
+        files: state.files.map(f => f.id === id ? { ...f, isTrashed: true, trashedAt: Date.now() } : f)
+      })),
+
+      trashFolder: (id) => set((state) => ({
+        folders: state.folders.map(f => f.id === id ? { ...f, isTrashed: true, trashedAt: Date.now() } : f),
+        files: state.files.map(f => f.folderId === id ? { ...f, isTrashed: true, trashedAt: Date.now() } : f)
+      })),
+
+      restoreFile: (id) => set((state) => ({
+        files: state.files.map(f => f.id === id ? { ...f, isTrashed: false, trashedAt: undefined } : f)
+      })),
+
+      restoreFolder: (id) => set((state) => ({
+        folders: state.folders.map(f => f.id === id ? { ...f, isTrashed: false, trashedAt: undefined } : f),
+        files: state.files.map(f => f.folderId === id ? { ...f, isTrashed: false, trashedAt: undefined } : f)
+      })),
+
+      emptyTrash: () => set((state) => ({
+        folders: state.folders.filter(f => !f.isTrashed),
+        files: state.files.filter(f => !f.isTrashed)
       })),
 
       clearForNewSession: () => set({

@@ -164,3 +164,135 @@ export async function apiDeleteFolder(userId: string, _sessionToken: string, fol
 export function apiGetDownloadUrl(userId: string, fileId: string): string {
   return `${API_BASE}/api/simple/download/${fileId}?_uid=${encodeURIComponent(userId)}`
 }
+
+// ── Trash ────────────────────────────────────────────────────────────────
+
+export async function apiTrashItem(userId: string, id: string, type: 'file' | 'folder') {
+  const res = await fetch(`${API_BASE}/api/simple/trash/${id}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders(userId) },
+    body: JSON.stringify({ type }),
+  })
+  if (!res.ok) throw new Error('Failed to trash item')
+  return res.json()
+}
+
+export async function apiRestoreItem(userId: string, id: string, type: 'file' | 'folder') {
+  const res = await fetch(`${API_BASE}/api/simple/restore/${id}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders(userId) },
+    body: JSON.stringify({ type }),
+  })
+  if (!res.ok) throw new Error('Failed to restore item')
+  return res.json()
+}
+
+export async function apiListTrash(userId: string) {
+  const res = await fetch(`${API_BASE}/api/simple/trash`, { headers: authHeaders(userId) })
+  if (!res.ok) throw new Error('Failed to list trash')
+  return res.json() as Promise<{ files: any[]; folders: any[] }>
+}
+
+export async function apiEmptyTrash(userId: string) {
+  const res = await fetch(`${API_BASE}/api/simple/trash/empty`, {
+    method: 'DELETE',
+    headers: authHeaders(userId),
+  })
+  if (!res.ok) throw new Error('Failed to empty trash')
+  return res.json()
+}
+
+// ── Move ─────────────────────────────────────────────────────────────────
+
+export async function apiMoveFile(userId: string, fileId: string, folderId: string | null) {
+  const res = await fetch(`${API_BASE}/api/simple/move/${fileId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders(userId) },
+    body: JSON.stringify({ folderId }),
+  })
+  if (!res.ok) throw new Error('Failed to move file')
+  return res.json()
+}
+
+// ── Share ─────────────────────────────────────────────────────────────────
+
+export async function apiCreateShareLink(userId: string, fileId: string) {
+  const res = await fetch(`${API_BASE}/api/simple/share/${fileId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders(userId) },
+  })
+  if (!res.ok) throw new Error('Failed to create share link')
+  return res.json() as Promise<{ linkId: string }>
+}
+
+export async function apiRemoveShareLink(userId: string, fileId: string) {
+  const res = await fetch(`${API_BASE}/api/simple/share/${fileId}`, {
+    method: 'DELETE',
+    headers: authHeaders(userId),
+  })
+  if (!res.ok) throw new Error('Failed to remove share link')
+  return res.json()
+}
+
+export async function apiGetShareInfo(userId: string, fileId: string) {
+  const res = await fetch(`${API_BASE}/api/simple/share-info/${fileId}`, {
+    headers: authHeaders(userId),
+  })
+  if (!res.ok) throw new Error('Failed to get share info')
+  return res.json() as Promise<{ shared: boolean; linkId?: string }>
+}
+
+// ── Upload from URL ──────────────────────────────────────────────────────
+
+export function apiUploadFromUrl(
+  userId: string,
+  url: string,
+  folderId: string | null,
+  onProgress?: (pct: number, stage?: string) => void
+): Promise<{ file: any }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${API_BASE}/api/simple/upload-url`)
+    xhr.setRequestHeader('Content-Type', 'application/json')
+    xhr.setRequestHeader('x-user-id', userId)
+
+    let sseBuffer = ''
+    xhr.onprogress = () => {
+      const newText = xhr.responseText.slice(sseBuffer.length)
+      sseBuffer = xhr.responseText
+      for (const event of parseSSEChunk(newText)) {
+        if (event.type === 'progress' && onProgress) {
+          onProgress(event.pct, event.stage)
+        } else if (event.type === 'done') {
+          if (onProgress) onProgress(100)
+          resolve({ file: event.file })
+        } else if (event.type === 'error') {
+          reject(new Error(event.error ?? 'Upload from URL failed'))
+        }
+      }
+    }
+    xhr.onload = () => {
+      for (const event of parseSSEChunk(xhr.responseText.slice(sseBuffer.length))) {
+        if (event.type === 'done') { if (onProgress) onProgress(100); resolve({ file: event.file }); return }
+        if (event.type === 'error') { reject(new Error(event.error ?? 'Upload from URL failed')); return }
+      }
+      if (xhr.status !== 200) reject(new Error(`Upload from URL failed (HTTP ${xhr.status})`))
+    }
+    xhr.onerror = () => reject(new Error('Network error'))
+    xhr.send(JSON.stringify({ url, folderId }))
+  })
+}
+
+// ── Stats ─────────────────────────────────────────────────────────────────
+
+export async function apiGetStats(userId: string) {
+  const res = await fetch(`${API_BASE}/api/simple/stats`, { headers: authHeaders(userId) })
+  if (!res.ok) throw new Error('Failed to get stats')
+  return res.json() as Promise<{
+    totalSize: number
+    totalFiles: number
+    totalFolders: number
+    byType: { category: string; size: number; count: number }[]
+    recentFiles: any[]
+  }>
+}

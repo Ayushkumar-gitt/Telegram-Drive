@@ -9,9 +9,10 @@ const thumbnailCache = new Map<string, string>()
 
 interface ThumbnailProps {
   file: TGFile
+  className?: string
 }
 
-export const Thumbnail = ({ file }: ThumbnailProps) => {
+export const Thumbnail = ({ file, className }: ThumbnailProps) => {
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(thumbnailCache.get(file.id) || null)
   const { sessionString, apiId, apiHash, accountType } = useAuthStore()
 
@@ -20,7 +21,8 @@ export const Thumbnail = ({ file }: ThumbnailProps) => {
 
     const fetchThumbnail = async () => {
       if (thumbnailUrl) return
-      if (!file.mimeType.startsWith('image/') && !file.mimeType.startsWith('video/')) return
+      // Only fetch thumbnails for images, NOT videos
+      if (!file.mimeType.startsWith('image/')) return
       // Simple users don't use browser GramJS — skip thumbnail fetch to avoid WebSocket errors
       if (accountType === 'simple') return
       if (!sessionString || !apiId || !apiHash) return
@@ -59,13 +61,13 @@ export const Thumbnail = ({ file }: ThumbnailProps) => {
       <img
         src={thumbnailUrl}
         alt={file.name}
-        className="w-6 h-6 rounded object-cover flex-shrink-0"
+        className={className || "w-6 h-6 rounded object-cover flex-shrink-0"}
       />
     )
   }
 
-  if (file.mimeType.startsWith('image/')) return <ImageIcon className="w-5 h-5 text-blue-500 flex-shrink-0" />
-  if (file.mimeType.startsWith('video/')) return <VideoIcon className="w-5 h-5 text-purple-500 flex-shrink-0" />
+  if (file.mimeType.startsWith('image/')) return <ImageIcon className={className || "w-5 h-5 text-blue-500 flex-shrink-0"} />
+  if (file.mimeType.startsWith('video/')) return <VideoIcon className={className || "w-5 h-5 text-purple-500 flex-shrink-0"} />
 
   return null
 }
