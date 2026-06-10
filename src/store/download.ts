@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 
+export const downloadControllers = new Map<string, AbortController>()
+
 export interface DownloadTask {
   id: string
   fileName: string

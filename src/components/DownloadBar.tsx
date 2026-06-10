@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Download, CheckCircle2, AlertCircle, File } from 'lucide-react'
 import { filesize } from 'filesize'
-import { useDownloadStore } from '../store/download'
+import { useDownloadStore, downloadControllers } from '../store/download'
 
 export const DownloadBar = () => {
   const { tasks, removeTask } = useDownloadStore()
@@ -17,7 +17,7 @@ export const DownloadBar = () => {
     <motion.div
       initial={{ y: 100, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
-      className="fixed bottom-6 left-6 w-96 bg-white dark:bg-[#111] rounded-2xl shadow-2xl overflow-hidden z-40 border border-neutral-200 dark:border-white/10 flex flex-col max-h-[500px]"
+      className="fixed bottom-24 md:bottom-6 left-4 md:left-6 w-[calc(100%-2rem)] md:w-96 bg-white dark:bg-[#111] rounded-2xl shadow-2xl overflow-hidden z-[60] border border-neutral-200 dark:border-white/10 flex flex-col max-h-[400px] md:max-h-[500px]"
     >
       <div
         className="flex items-center justify-between p-4 bg-neutral-50/80 dark:bg-[#0a0a0a]/50 backdrop-blur-md border-b border-neutral-200 dark:border-white/10 cursor-pointer"
@@ -71,12 +71,29 @@ export const DownloadBar = () => {
                   </div>
 
                   {task.status === 'downloading' && (
-                    <div className="h-1.5 w-full bg-neutral-200 dark:bg-white/10 rounded-full overflow-hidden">
-                      <motion.div
-                        className="h-full bg-blue-500"
-                        initial={{ width: 0 }}
-                        animate={{ width: `${task.progress}%` }}
-                      />
+                    <div className="flex items-center gap-2">
+                      <div className="h-1.5 w-full bg-neutral-200 dark:bg-white/10 rounded-full overflow-hidden">
+                        <motion.div
+                          className="h-full bg-blue-500"
+                          initial={{ width: 0 }}
+                          animate={{ width: `${task.progress}%` }}
+                        />
+                      </div>
+                      <button
+                        onClick={(e) => { 
+                          e.stopPropagation()
+                          const ctrl = downloadControllers.get(task.id)
+                          if (ctrl) {
+                            ctrl.abort()
+                          } else {
+                            useDownloadStore.getState().setTaskStatus(task.id, 'error', 'Cancelled')
+                          }
+                        }}
+                        className="p-1 text-neutral-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10 rounded-md transition-colors"
+                        title="Cancel download"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   )}
                 </div>

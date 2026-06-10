@@ -5,7 +5,8 @@ import { Buffer } from 'buffer'
 export const downloadFileFromTelegram = async (
   client: TelegramClient,
   file: TGFile,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal
 ) => {
   try {
     let totalBuffer: Buffer
@@ -35,6 +36,7 @@ export const downloadFileFromTelegram = async (
         const buffer = await client.downloadMedia(messages[0], {
           workers: 4,
           progressCallback: (downloaded: any, total: any) => {
+            if (signal?.aborted) throw new Error('Cancelled')
             if (onProgress && total) {
               const chunkProgress = Number(downloaded) / Number(total)
               const overallProgress = ((i + chunkProgress) / totalChunks) * 100
@@ -59,6 +61,7 @@ export const downloadFileFromTelegram = async (
       const buffer = await client.downloadMedia(messages[0], {
         workers: 4,
         progressCallback: (downloaded: any, total: any) => {
+          if (signal?.aborted) throw new Error('Cancelled')
           if (onProgress && total) {
             const progress = Number(downloaded) / Number(total)
             onProgress(progress * 100)

@@ -1,11 +1,10 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useVirtualizer } from '@tanstack/react-virtual'
 import { useFileSystemStore, type TGFile, type TGFolder } from '../store/filesystem'
 import { useAuthStore } from '../store/auth'
 import { useDownloadStore } from '../store/download'
 import { getTelegramClient, resetClient } from '../lib/telegram'
-import { apiListFiles, apiCreateFolder, apiTrashItem, apiRestoreItem, apiListTrash, apiEmptyTrash, apiMoveFile, apiCreateShareLink, apiGetStats, apiUploadFromUrl } from '../lib/simpleUserApi'
+import { apiListFiles, apiCreateFolder, apiTrashItem, apiRestoreItem, apiListTrash, apiEmptyTrash, apiCreateShareLink, apiGetStats, apiUploadFromUrl } from '../lib/simpleUserApi'
 import { format } from 'date-fns'
 import { filesize } from 'filesize'
 import {
@@ -15,24 +14,20 @@ import {
   Plus,
   ArrowLeft,
   Search,
-  LogOut,
-  FolderPlus,
   Download as DownloadIcon,
   Trash2 as TrashIcon,
-  User,
   LayoutGrid,
   List as ListIcon,
-  Menu,
   X,
-  Share2,
   Image as ImageIcon,
   BarChart3,
-  CheckSquare,
-  Square,
   Copy,
   RotateCcw,
   Trash,
-  Globe
+  Cloud,
+  CheckSquare,
+  Square,
+  LogOut
 } from 'lucide-react'
 import { Api } from 'telegram'
 import { v4 as uuidv4 } from 'uuid'
@@ -62,13 +57,26 @@ export const Dashboard = () => {
   const [newFolderName, setNewFolderName] = useState('')
   const [viewingFile, setViewingFile] = useState<TGFile | null>(null)
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
-  const [drawerOpen, setDrawerOpen] = useState(false)
+
+  const [recentFileIds, setRecentFileIds] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('recentFileIds') || '[]') } catch { return [] }
+  })
+  
+  const handleFileOpen = (file: TGFile) => {
+    setViewingFile(file)
+    setRecentFileIds(prev => {
+      const updated = [file.id, ...prev.filter(id => id !== file.id)].slice(0, 3)
+      localStorage.setItem('recentFileIds', JSON.stringify(updated))
+      return updated
+    })
+  }
 
   // New feature state
-  type TabType = 'files' | 'gallery' | 'trash' | 'stats'
-  const [activeTab, setActiveTab] = useState<TabType>('files')
+  type TabType = 'overview' | 'files' | 'gallery' | 'trash' | 'stats'
+  const [activeTab, setActiveTab] = useState<TabType>('overview')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null)
+
+
   const [trashFiles, setTrashFiles] = useState<any[]>([])
   const [trashFolders, setTrashFolders] = useState<any[]>([])
   const [shareModalFile, setShareModalFile] = useState<TGFile | null>(null)
@@ -77,8 +85,7 @@ export const Dashboard = () => {
   const [uploadUrl, setUploadUrl] = useState('')
   const [urlUploadProgress, setUrlUploadProgress] = useState<number | null>(null)
   const [stats, setStats] = useState<any>(null)
-
-  const parentRef = useRef<HTMLDivElement>(null)
+  const [isInitializing, setIsInitializing] = useState(true)
 
   // Initialize: load file list
   // Simple users: load from Railway server DB (lightweight JSON, zero TG connection needed)
@@ -86,7 +93,10 @@ export const Dashboard = () => {
   // TG connection for simple users happens lazily on first upload/download (in Uploader)
   useEffect(() => {
     if (accountType === 'simple') {
-      if (!userId) return
+      if (!userId) {
+        setIsInitializing(false)
+        return
+      }
       apiListFiles(userId, userId)
         .then(data => {
           const { setFilesAndFolders } = useFileSystemStore.getState() as any
@@ -100,10 +110,13 @@ export const Dashboard = () => {
           }
         })
         .catch(err => console.error('Failed to load files:', err))
+        .finally(() => setIsInitializing(false))
     } else if (sessionString && apiId && apiHash) {
       getTelegramClient(sessionString, apiId, apiHash).then(client => {
-        syncFromMetadataChannel(client)
+        syncFromMetadataChannel(client).finally(() => setIsInitializing(false))
       })
+    } else {
+      setIsInitializing(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountType, userId, sessionString, apiId, apiHash])
@@ -163,19 +176,24 @@ export const Dashboard = () => {
 
   // ── Shared download handler (with progress tracking) ─────────────────────
   const { addTask: addDownloadTask, updateTaskProgress: updateDownloadProgress, setTaskStatus: setDownloadStatus } = useDownloadStore()
-
+  
   const handleDownload = async (file: TGFile) => {
     const taskId = uuidv4()
     addDownloadTask({ id: taskId, fileName: file.name, fileSize: file.size, progress: 0, status: 'pending' })
     setDownloadStatus(taskId, 'downloading')
 
     try {
+      const controller = new AbortController()
+      const { downloadControllers } = await import('../store/download')
+      downloadControllers.set(taskId, controller)
+
       if (accountType === 'simple') {
         // Simple user: download via server with progress via ReadableStream
         if (!userId) return
         const SIMPLE_API = import.meta.env.DEV ? 'http://localhost:3000' : ''
         const resp = await fetch(`${SIMPLE_API}/api/simple/download/${file.id}`, {
           headers: { 'x-user-id': userId },
+          signal: controller.signal
         })
         if (!resp.ok) throw new Error('Download failed')
 
@@ -200,18 +218,27 @@ export const Dashboard = () => {
         document.body.appendChild(a); a.click()
         setTimeout(() => { URL.revokeObjectURL(url); a.remove() }, 1000)
 
+        setDownloadStatus(taskId, 'completed')
+        downloadControllers.delete(taskId)
+
       } else {
         // Telegram user: download via browser GramJS with progress callback
         if (!sessionString || !apiId || !apiHash) throw new Error('Not authenticated')
         const { downloadFileFromTelegram } = await import('../lib/download')
         const client = await getTelegramClient(sessionString, apiId, apiHash)
-        await downloadFileFromTelegram(client, file, (pct) => updateDownloadProgress(taskId, pct))
+        await downloadFileFromTelegram(client, file, (pct) => updateDownloadProgress(taskId, pct), controller.signal)
+        setDownloadStatus(taskId, 'completed')
+        downloadControllers.delete(taskId)
       }
-
-      setDownloadStatus(taskId, 'completed')
-    } catch (err: any) {
-      setDownloadStatus(taskId, 'error', err.message)
-      toast.error(`Download failed: ${err.message}`)
+    } catch (error: any) {
+      const { downloadControllers } = await import('../store/download')
+      if (error.name === 'AbortError' || error.message === 'Cancelled') {
+        setDownloadStatus(taskId, 'error', 'Cancelled')
+      } else {
+        setDownloadStatus(taskId, 'error')
+        toast.error('Download failed: ' + error.message)
+      }
+      downloadControllers.delete(taskId)
     }
   }
 
@@ -359,26 +386,7 @@ export const Dashboard = () => {
   }
 
   // ── Move file (drag & drop) ──────────────────────────────────────────────
-  const handleDrop = async (fileId: string, targetFolderId: string | null) => {
-    if (!userId) return
-    try {
-      if (accountType === 'simple') {
-        await apiMoveFile(userId, fileId, targetFolderId)
-        const data = await apiListFiles(userId, userId)
-        useFileSystemStore.getState().setFilesAndFolders(data.files, data.folders.filter((f: any) => f.id !== '__root__'))
-      } else {
-        // For TG users, update local state
-        const { files: allFiles } = useFileSystemStore.getState()
-        useFileSystemStore.setState({ files: allFiles.map(f => f.id === fileId ? { ...f, folderId: targetFolderId } : f) })
-        if (sessionString && apiId && apiHash) {
-          const client = await getTelegramClient(sessionString, apiId, apiHash)
-          await syncToMetadataChannel(client)
-        }
-      }
-      toast.success('File moved')
-    } catch { toast.error('Move failed') }
-    setDragOverFolderId(null)
-  }
+
 
   const handleUrlUpload = async () => {
     if (!userId || !uploadUrl.trim()) return
@@ -486,6 +494,7 @@ export const Dashboard = () => {
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
   }
+
   const handleBulkDelete = async () => {
     if (!userId || selectedIds.size === 0) return
     if (!confirm(`Move ${selectedIds.size} items to trash?`)) return
@@ -494,12 +503,9 @@ export const Dashboard = () => {
         const isFolder = folders.some(f => f.id === id)
         if (accountType === 'simple') {
           await apiTrashItem(userId, id, isFolder ? 'folder' : 'file')
-          if (isFolder) useFileSystemStore.getState().trashFolder(id)
-          else useFileSystemStore.getState().trashFile(id)
-        } else {
-          if (isFolder) useFileSystemStore.getState().trashFolder(id)
-          else useFileSystemStore.getState().trashFile(id)
         }
+        if (isFolder) useFileSystemStore.getState().trashFolder(id)
+        else useFileSystemStore.getState().trashFile(id)
       } catch { }
     }
     if (accountType === 'telegram' && sessionString && apiId && apiHash) {
@@ -509,12 +515,12 @@ export const Dashboard = () => {
     setSelectedIds(new Set())
     toast.success('Items moved to trash')
   }
+
   const handleBulkDownload = () => {
     const filesToDl = files.filter(f => selectedIds.has(f.id))
     filesToDl.forEach(f => handleDownload(f))
     setSelectedIds(new Set())
   }
-
   // ── Tab change effect ────────────────────────────────────────────────────
   useEffect(() => {
     if (activeTab === 'trash') loadTrash()
@@ -552,12 +558,7 @@ export const Dashboard = () => {
   }, [files, folders, currentFolderId, searchQuery])
 
   // Virtualizer for high performance grid
-  const virtualizer = useVirtualizer({
-    count: items.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 64, // Height of list item
-    overscan: 5,
-  })
+
 
   const getFileIcon = (file: TGFile) => {
     if (file.mimeType.startsWith('image/') || file.mimeType.startsWith('video/')) {
@@ -567,477 +568,370 @@ export const Dashboard = () => {
     return <FileIcon className="w-5 h-5 text-gray-500 flex-shrink-0" />
   }
 
+
+  // Derived state for the redesign
+  const recentOpenedFiles = useMemo(() => {
+    const fileMap = new Map(files.map(f => [f.id, f]))
+    const recent = recentFileIds.map(id => fileMap.get(id)).filter(Boolean) as TGFile[]
+    if (recent.length > 0) return recent
+    return [...files].filter(f => !f.isTrashed).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 3)
+  }, [files, recentFileIds])
+
+  const newFilesList = useMemo(() => {
+    return [...files].filter(f => !f.isTrashed).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 4)
+  }, [files])
+
+  const sharedFilesList = useMemo(() => {
+    // Just showing some files as "Shared" for UI purposes
+    return [...files].filter(f => !f.isTrashed).slice(0, 6)
+  }, [files])
+
   return (
-    <div className="h-screen flex flex-col bg-neutral-50 dark:bg-[#050505] text-black dark:text-white font-sans">
-      {/* Header */}
-      <header className="bg-white/80 dark:bg-[#0a0a0a]/80 backdrop-blur-md border-b border-neutral-200 dark:border-white/10 p-4 sticky top-0 z-20">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 sm:gap-4">
-          <div className="flex items-center gap-2 sm:gap-4 min-w-0">
-            {currentFolderId && (
-              <button
-                onClick={() => setCurrentFolderId(null)}
-                className="p-2 hover:bg-neutral-100 dark:hover:bg-white/10 rounded-full transition-colors text-neutral-500 hover:text-black dark:hover:text-white flex-shrink-0"
-              >
-                <ArrowLeft className="w-5 h-5" />
-              </button>
-            )}
-            <h1 className="text-lg sm:text-xl font-bold tracking-tight truncate">
-              {currentFolderId
-                ? folders.find(f => f.id === currentFolderId)?.name
-                : 'Cloud Space'}
-            </h1>
-          </div>
+    <div className="h-screen flex bg-[#0A0D14] text-white font-sans overflow-hidden">
+      
+      {/* ── Left Sidebar ── */}
+      <aside className="hidden md:flex w-64 bg-[#0A0D14] border-r border-white/5 flex-col flex-shrink-0">
+        <div className="p-6">
+          <h1 className="text-2xl font-bold tracking-tighter text-[#5A62FB] flex items-center gap-2">
+            <Cloud className="w-6 h-6" />
+            Cloud Space
+          </h1>
+        </div>
 
-          <div className="flex-1 max-w-xl relative hidden sm:block">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-neutral-400" />
-            <input
-              type="text"
-              placeholder={currentFolderId ? 'Search in this folder...' : 'Search files...'}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2.5 bg-neutral-100 dark:bg-white/5 border border-transparent dark:border-white/5 rounded-xl focus:ring-2 focus:ring-neutral-200 dark:focus:ring-white/20 focus:border-transparent outline-none transition-all placeholder:text-neutral-400"
-            />
-          </div>
-
-
-          {selectedIds.size > 0 && activeTab === 'files' && (
-            <div className="flex items-center gap-2 bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded-xl shadow-lg animate-in fade-in slide-in-from-top-4 absolute top-4 left-1/2 -translate-x-1/2 z-50">
-              <span className="font-medium text-sm">{selectedIds.size} selected</span>
-              <div className="w-px h-4 bg-white/20 dark:bg-black/20 mx-2" />
-              <button onClick={handleBulkDownload} className="p-1 hover:bg-white/20 dark:hover:bg-black/20 rounded transition-colors" title="Download Selected"><DownloadIcon className="w-4 h-4" /></button>
-              <button onClick={handleBulkDelete} className="p-1 hover:bg-white/20 dark:hover:bg-black/20 rounded transition-colors" title="Trash Selected"><TrashIcon className="w-4 h-4" /></button>
-              <button onClick={() => setSelectedIds(new Set())} className="p-1 hover:bg-white/20 dark:hover:bg-black/20 rounded transition-colors" title="Clear Selection"><X className="w-4 h-4" /></button>
-            </div>
-          )}
-
-          <div className="flex items-center gap-2 sm:gap-3">
-            <div className="hidden md:flex items-center bg-neutral-100 dark:bg-white/10 p-1 rounded-lg">
-              <button
-                onClick={() => setViewMode('grid')}
-                className={`p-1.5 rounded-md transition-all ${viewMode === 'grid' ? 'bg-white dark:bg-white/20 shadow-sm text-black dark:text-white' : 'text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-white'}`}
-                title="Grid View"
-              >
-                <LayoutGrid className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setViewMode('list')}
-                className={`p-1.5 rounded-md transition-all ${viewMode === 'list' ? 'bg-white dark:bg-white/20 shadow-sm text-black dark:text-white' : 'text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-white'}`}
-                title="List View"
-              >
-                <ListIcon className="w-4 h-4" />
-              </button>
-            </div>
-
-            {!currentFolderId && (
-              <button
-                onClick={() => setIsCreatingFolder(true)}
-                className="hidden sm:flex p-2.5 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-white/10 rounded-xl transition-colors items-center gap-2"
-              >
-                <FolderPlus className="w-5 h-5" />
-                <span className="hidden lg:inline">New Folder</span>
-              </button>
-            )}
-            <button
-              onClick={() => document.getElementById('global-file-input')?.click()}
-              className="bg-black dark:bg-white hover:bg-neutral-800 dark:hover:bg-neutral-200 text-white dark:text-black px-3 sm:px-4 py-2.5 rounded-xl transition-colors shadow-sm flex items-center gap-2 font-medium"
+        <div className="flex-1 overflow-y-auto px-4 pb-4 no-scrollbar">
+          <div className="mb-6">
+            <button 
+              onClick={() => { setActiveTab('overview'); setCurrentFolderId(null) }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'overview' ? 'text-[#5A62FB] bg-[#5A62FB]/10 font-medium' : 'text-neutral-400 hover:text-white hover:bg-white/5'}`}
             >
-              <Plus className="w-5 h-5" />
-              <span className="hidden sm:inline">Upload</span>
+              <LayoutGrid className="w-5 h-5" />
+              My drive
             </button>
-            {userId && (
-              <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-neutral-100 dark:bg-white/10 text-neutral-600 dark:text-neutral-300 border border-neutral-200 dark:border-white/10">
-                <User className="w-4 h-4" />
-                {userId}
-              </div>
-            )}
-            <button
-              onClick={handleLogout}
-              className="hidden sm:flex p-2.5 text-neutral-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-xl transition-colors ml-1"
-              title="Logout"
-            >
+          </div>
+
+          <div className="mb-6">
+            <p className="px-4 text-xs font-bold text-neutral-500 tracking-wider mb-2">FILES</p>
+            <div className="space-y-1">
+              <button onClick={() => { setActiveTab('files'); setCurrentFolderId(null) }} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-colors ${activeTab === 'files' && !currentFolderId ? 'text-white bg-white/5 font-medium' : 'text-neutral-400 hover:text-white hover:bg-white/5'}`}><FolderIcon className="w-4 h-4" /> Dashboard files</button>
+              <button onClick={() => setActiveTab('gallery')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-colors ${activeTab === 'gallery' ? 'text-white bg-white/5 font-medium' : 'text-neutral-400 hover:text-white hover:bg-white/5'}`}><ImageIcon className="w-4 h-4" /> Gallery</button>
+              <button onClick={() => setActiveTab('trash')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-colors ${activeTab === 'trash' ? 'text-white bg-white/5 font-medium' : 'text-neutral-400 hover:text-white hover:bg-white/5'}`}><Trash className="w-4 h-4" /> Trash</button>
+              <button onClick={() => setActiveTab('stats')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-colors ${activeTab === 'stats' ? 'text-white bg-white/5 font-medium' : 'text-neutral-400 hover:text-white hover:bg-white/5'}`}><BarChart3 className="w-4 h-4" /> Storage Stats</button>
+            </div>
+          </div>
+
+          <div>
+            <p className="px-4 text-xs font-bold text-neutral-500 tracking-wider mb-2 flex items-center justify-between">
+              MY PLACES
+              <button onClick={() => setIsCreatingFolder(true)} className="hover:text-white transition-colors"><Plus className="w-3.5 h-3.5" /></button>
+            </p>
+            <div className="space-y-1">
+              {folders.filter(f => !f.isTrashed).map(folder => (
+                <button 
+                  key={folder.id}
+                  onClick={() => { setActiveTab('files'); setCurrentFolderId(folder.id) }}
+                  className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-colors truncate ${currentFolderId === folder.id ? 'text-white bg-white/5 font-medium' : 'text-neutral-400 hover:text-white hover:bg-white/5'}`}
+                >
+                  <FolderIcon className="w-4 h-4 flex-shrink-0" /> 
+                  <span className="truncate text-sm">{folder.name}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="p-4 mt-auto border-t border-white/5">
+          <div className="flex items-center gap-3 px-2 py-2">
+            <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-[#5A62FB] to-purple-500 flex items-center justify-center text-white font-bold flex-shrink-0 shadow-lg">
+              {userId ? userId.charAt(0).toUpperCase() : 'U'}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold truncate text-white">{userId || 'User'}</p>
+              <button onClick={handleLogout} className="text-xs text-neutral-500 hover:text-red-400 transition-colors">Logout</button>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* ── Main Content Area ── */}
+      <main className="flex-1 flex flex-col overflow-hidden bg-[#11141D] md:rounded-tl-3xl shadow-2xl relative pb-20 md:pb-0">
+        
+        {/* Top Header Row */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between p-6 md:p-8 pb-4 gap-4">
+          <div className="flex items-center justify-between md:justify-start w-full md:w-auto gap-3 text-neutral-500">
+            <button onClick={() => setCurrentFolderId(null)} className={`p-1.5 rounded-lg transition-colors ${currentFolderId ? 'hover:bg-white/10 text-white' : 'opacity-50 cursor-not-allowed'}`}>
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <div className="md:hidden flex items-center gap-2 text-[#5A62FB] font-bold">
+              <Cloud className="w-5 h-5" />
+              Cloud Space
+            </div>
+            <button onClick={handleLogout} className="md:hidden p-1.5 text-neutral-400 hover:text-white transition-colors">
               <LogOut className="w-5 h-5" />
             </button>
-            {/* Mobile hamburger */}
-            <button
-              onClick={() => setDrawerOpen(true)}
-              className="sm:hidden p-2.5 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-white/10 rounded-xl transition-colors"
+          </div>
+          
+          <div className="flex items-center gap-4 w-full md:w-auto">
+            <button 
+              onClick={() => document.getElementById('global-file-input')?.click()}
+              className="hidden md:block px-6 py-2.5 bg-[#5A62FB] hover:bg-[#4d54d6] text-white text-sm font-medium rounded-full shadow-[0_0_15px_rgba(90,98,251,0.3)] transition-all active:scale-95 whitespace-nowrap"
             >
-              <Menu className="w-5 h-5" />
+              UPLOAD NEW FILE
             </button>
+            
+            <div className="relative w-full md:w-64">
+              <input
+                type="text"
+                placeholder="Search your content"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-[#1A1D27] text-sm text-white placeholder-neutral-500 rounded-full pl-5 pr-10 py-2.5 outline-none focus:ring-1 focus:ring-[#5A62FB] transition-all"
+              />
+              <button className="absolute right-1 top-1 p-1.5 bg-[#5A62FB] rounded-full text-white">
+                <Search className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Mobile search bar — below header row */}
-        <div className="sm:hidden mt-3">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
-            <input
-              type="text"
-              placeholder={currentFolderId ? 'Search in this folder...' : 'Search files...'}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 bg-neutral-100 dark:bg-white/5 border border-transparent dark:border-white/5 rounded-xl focus:ring-2 focus:ring-neutral-200 dark:focus:ring-white/20 outline-none transition-all placeholder:text-neutral-400 text-sm"
-            />
-          </div>
-        </div>
-      </header>
-
-      {/* Mobile Drawer */}
-      <AnimatePresence>
-        {drawerOpen && (
-          <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/50 z-40"
-              onClick={() => setDrawerOpen(false)}
-            />
-            <motion.div
-              initial={{ x: '100%' }}
-              animate={{ x: 0 }}
-              exit={{ x: '100%' }}
-              transition={{ type: 'spring', damping: 30, stiffness: 300 }}
-              className="fixed top-0 right-0 h-full w-72 bg-white dark:bg-[#111] border-l border-neutral-200 dark:border-white/10 z-50 flex flex-col shadow-2xl"
-            >
-              <div className="flex items-center justify-between p-4 border-b border-neutral-200 dark:border-white/10">
-                <h2 className="font-semibold text-lg">Menu</h2>
-                <button onClick={() => setDrawerOpen(false)} className="p-2 hover:bg-neutral-100 dark:hover:bg-white/10 rounded-xl transition-colors">
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              <div className="flex-1 p-4 space-y-2">
-                <div className="block sm:hidden mb-6">
-                  <SidebarNav activeTab={activeTab} setActiveTab={(t: TabType) => { setActiveTab(t); setDrawerOpen(false) }} onUrlUpload={() => { setUrlUploadOpen(true); setDrawerOpen(false) }} />
-                </div>
-
-                {userId && (
-                  <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-neutral-100 dark:bg-white/5 border border-neutral-200 dark:border-white/10 mb-4">
-                    <User className="w-5 h-5 text-neutral-500" />
-                    <span className="font-medium text-sm truncate">{userId}</span>
+        {/* Dynamic Content Area based on Tab & State */}
+        <div className="flex-1 overflow-y-auto px-8 pb-8 no-scrollbar">
+          
+          {isInitializing ? (
+            <div className="flex flex-col items-center justify-center h-full py-32 text-center animate-in fade-in duration-500">
+              <div className="w-12 h-12 border-4 border-[#5A62FB] border-t-transparent rounded-full animate-spin mb-4 mx-auto" />
+              <p className="text-neutral-400">Loading your drive...</p>
+            </div>
+          ) : activeTab === 'overview' && !searchQuery ? (
+            /* ── Redesigned Dashboard Root View ── */
+            <div className="space-y-10 animate-in fade-in duration-500">
+              
+              {/* Recently Used (Files) */}
+              {recentOpenedFiles.length > 0 && (
+                <section>
+                  <h2 className="text-lg font-semibold mb-4 text-white/90">Recently used</h2>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    {recentOpenedFiles.map((file, idx) => (
+                      <div 
+                        key={file.id} 
+                        onClick={() => handleFileOpen(file)}
+                        className={`p-6 rounded-3xl cursor-pointer transition-transform hover:scale-[1.02] active:scale-[0.98] ${idx === 0 ? 'bg-[#5A62FB] text-white shadow-[0_8px_30px_rgba(90,98,251,0.2)]' : 'bg-[#1A1D27] text-white hover:bg-[#202430]'}`}
+                      >
+                        <div className="flex justify-between items-start mb-8">
+                           <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${idx === 0 ? 'bg-white/20 text-white' : 'bg-[#5A62FB]/10 text-[#5A62FB]'}`}>
+                             {getFileIcon(file)}
+                           </div>
+                        </div>
+                        <p className={`text-xs font-semibold mb-1 tracking-wider ${idx === 0 ? 'text-white/60' : 'text-neutral-500'}`}>FILE</p>
+                        <h3 className="text-xl font-semibold truncate">{file.name}</h3>
+                      </div>
+                    ))}
                   </div>
-                )}
-
-                {!currentFolderId && (
-                  <button
-                    onClick={() => { setDrawerOpen(false); setIsCreatingFolder(true) }}
-                    className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-neutral-100 dark:hover:bg-white/10 transition-colors text-left"
-                  >
-                    <FolderPlus className="w-5 h-5 text-neutral-500" />
-                    <span className="font-medium text-sm">New Folder</span>
-                  </button>
-                )}
-
-                <button
-                  onClick={() => { setDrawerOpen(false); setViewMode(viewMode === 'grid' ? 'list' : 'grid') }}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-neutral-100 dark:hover:bg-white/10 transition-colors text-left"
-                >
-                  {viewMode === 'grid' ? <ListIcon className="w-5 h-5 text-neutral-500" /> : <LayoutGrid className="w-5 h-5 text-neutral-500" />}
-                  <span className="font-medium text-sm">{viewMode === 'grid' ? 'List View' : 'Grid View'}</span>
-                </button>
-              </div>
-
-              <div className="p-4 border-t border-neutral-200 dark:border-white/10">
-                <button
-                  onClick={() => { setDrawerOpen(false); handleLogout() }}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-red-50 dark:hover:bg-red-500/10 text-red-500 transition-colors text-left"
-                >
-                  <LogOut className="w-5 h-5" />
-                  <span className="font-medium text-sm">Logout</span>
-                </button>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
-
-      {/* Layout Wrapper */}
-      <div className="flex flex-1 overflow-hidden max-w-7xl mx-auto w-full">
-        {/* Sidebar */}
-        <aside className="hidden sm:flex flex-col w-64 border-r border-neutral-200 dark:border-white/10 p-4 gap-2 overflow-y-auto">
-          <SidebarNav activeTab={activeTab} setActiveTab={setActiveTab} onUrlUpload={() => setUrlUploadOpen(true)} />
-        </aside>
-
-        {/* Main Content Area */}
-        <main className="flex-1 overflow-hidden flex flex-col p-4 relative">
-
-          {/* Create Folder Modal */}
-          <AnimatePresence>
-            {isCreatingFolder && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-              >
-                <motion.div
-                  initial={{ scale: 0.95 }}
-                  animate={{ scale: 1 }}
-                  exit={{ scale: 0.95 }}
-                  className="bg-white dark:bg-[#111] rounded-2xl p-6 w-full max-w-md shadow-2xl border border-neutral-200 dark:border-white/10"
-                >
-                  <h2 className="text-xl font-semibold mb-4">Create New Folder</h2>
-                  <form onSubmit={handleCreateFolder}>
-                    <input
-                      type="text"
-                      autoFocus
-                      value={newFolderName}
-                      onChange={(e) => setNewFolderName(e.target.value)}
-                      placeholder="Folder name"
-                      className="w-full px-4 py-3 border border-neutral-200 dark:border-white/10 rounded-xl bg-neutral-50 dark:bg-[#0a0a0a] focus:ring-2 focus:ring-neutral-200 dark:focus:ring-white/20 outline-none mb-6 transition-all"
-                    />
-                    <div className="flex justify-end gap-3">
-                      <button
-                        type="button"
-                        onClick={() => setIsCreatingFolder(false)}
-                        className="px-5 py-2.5 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-white/5 rounded-xl transition-colors font-medium"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="submit"
-                        disabled={!newFolderName.trim()}
-                        className="px-5 py-2.5 bg-black dark:bg-white text-white dark:text-black hover:bg-neutral-800 dark:hover:bg-neutral-200 disabled:opacity-50 rounded-xl transition-colors font-medium shadow-sm"
-                      >
-                        Create
-                      </button>
-                    </div>
-                  </form>
-                </motion.div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {activeTab === 'files' && (
-            <>
-              {/* List Header */}
-              {viewMode === 'list' && (
-                <div className="grid grid-cols-[1fr_120px_150px_60px] gap-4 px-6 py-3 text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider border-b border-neutral-200 dark:border-white/5">
-                  <div>Name</div>
-                  <div>Size</div>
-                  <div>Date modified</div>
-                  <div></div>
-                </div>
+                </section>
               )}
 
-              {/* Virtualized Grid/List */}
-              <div ref={parentRef} className="flex-1 overflow-auto">
-                {items.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-full text-neutral-400 space-y-4">
-                    <CloudUploadIcon className="w-16 h-16 opacity-20" />
-                    <p>This folder is empty</p>
+              {/* New Files List */}
+              {newFilesList.length > 0 && (
+                <section>
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-lg font-semibold text-white/90">New files</h2>
                   </div>
-                ) : viewMode === 'list' ? (
-                  <div
-                    style={{
-                      height: `${virtualizer.getTotalSize()}px`,
-                      width: '100%',
-                      position: 'relative',
-                    }}
-                  >
-                    {virtualizer.getVirtualItems().map((virtualRow) => {
-                      const item = items[virtualRow.index]
-                      const isFolder = item.type === 'folder'
-
-                      return (
-                        <div
-                          key={virtualRow.key}
-                          style={{
-                            position: 'absolute',
-                            top: 0,
-                            left: 0,
-                            width: '100%',
-                            height: `${virtualRow.size}px`,
-                            transform: `translateY(${virtualRow.start}px)`,
-                          }}
-                        >
-                          <motion.div
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            className="group h-full"
-                          >
-                            <div
-                              onClick={() => {
-                                if (selectedIds.size > 0) toggleSelect(item.id)
-                                else isFolder ? setCurrentFolderId(item.id) : setViewingFile(item as TGFile)
-                              }}
-                              draggable
-                              onDragStart={(e) => { e.dataTransfer.setData('text/plain', item.id) }}
-                              onDragOver={(e) => { if (isFolder) { e.preventDefault(); setDragOverFolderId(item.id) } }}
-                              onDragLeave={() => { if (isFolder) setDragOverFolderId(null) }}
-                              onDrop={(e) => { if (isFolder) { e.preventDefault(); handleDrop(e.dataTransfer.getData('text/plain'), item.id) } }}
-                              className={`grid grid-cols-[1fr_120px_150px_60px] gap-4 items-center px-6 h-full border-b transition-colors cursor-pointer ${dragOverFolderId === item.id ? 'bg-blue-50 dark:bg-blue-500/10 border-blue-200' : 'border-neutral-100 dark:border-white/5 hover:bg-neutral-100/50 dark:hover:bg-white/5'} ${selectedIds.has(item.id) ? 'bg-neutral-100 dark:bg-white/10' : ''}`}
-                            >
-                              <div className="flex items-center gap-3 overflow-hidden">
-                                <button onClick={(e) => { e.stopPropagation(); toggleSelect(item.id) }} className="text-neutral-400 hover:text-black dark:hover:text-white transition-colors">
-                                  {selectedIds.has(item.id) ? <CheckSquare className="w-5 h-5 text-black dark:text-white" /> : <Square className="w-5 h-5" />}
-                                </button>
-                                {isFolder ? (
-                                  <FolderIcon className="w-6 h-6 text-black dark:text-white flex-shrink-0" fill="currentColor" fillOpacity={0.1} />
-                                ) : (
-                                  getFileIcon(item as TGFile)
-                                )}
-                                <span className="truncate font-medium text-sm">{item.name}</span>
-                              </div>
-                              <div className="text-sm text-neutral-500 dark:text-neutral-400">
-                                {isFolder ? '--' : filesize((item as TGFile).size)}
-                              </div>
-                              <div className="text-sm text-neutral-500 dark:text-neutral-400">
-                                {item.createdAt ? format(new Date(item.createdAt), 'MMM d, yyyy') : '--'}
-                              </div>
-                              <div className="flex justify-end gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-                                {!isFolder && (
-                                  <>
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); handleShare(item as TGFile) }}
-                                      className="p-2 hover:bg-neutral-200 dark:hover:bg-white/10 rounded-lg text-neutral-600 dark:text-neutral-400 transition-all"
-                                      title="Share"
-                                    >
-                                      <Share2 className="w-4 h-4" />
-                                    </button>
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); handleDownload(item as TGFile) }}
-                                      className="p-2 hover:bg-neutral-200 dark:hover:bg-white/10 rounded-lg text-neutral-600 dark:text-neutral-400 transition-all"
-                                      title="Download"
-                                    >
-                                      <DownloadIcon className="w-4 h-4" />
-                                    </button>
-                                  </>
-                                )}
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); handleDelete(item, isFolder) }}
-                                  className="p-2 hover:bg-red-50 dark:hover:bg-red-500/10 text-red-500 rounded-lg transition-all"
-                                  title="Delete"
-                                >
-                                  <TrashIcon className="w-4 h-4" />
-                                </button>
-                              </div>
-                            </div>
-                          </motion.div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 p-4">
-                    {items.map((item) => {
-                      const isFolder = item.type === 'folder'
-                      return (
-                        <motion.div
-                          key={item.id}
-                          initial={{ opacity: 0, scale: 0.95 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          draggable
-                          onDragStart={(e: any) => { e.dataTransfer.setData('text/plain', item.id) }}
-                          onDragOver={(e: any) => { if (isFolder) { e.preventDefault(); setDragOverFolderId(item.id) } }}
-                          onDragLeave={() => { if (isFolder) setDragOverFolderId(null) }}
-                          onDrop={(e: any) => { if (isFolder) { e.preventDefault(); handleDrop(e.dataTransfer.getData('text/plain'), item.id) } }}
-                          onClick={() => {
-                            if (selectedIds.size > 0) toggleSelect(item.id)
-                            else isFolder ? setCurrentFolderId(item.id) : setViewingFile(item as TGFile)
-                          }}
-                          className={`group relative border rounded-2xl p-4 flex flex-col items-center gap-3 cursor-pointer hover:shadow-lg transition-all ${dragOverFolderId === item.id ? 'bg-blue-50 dark:bg-blue-500/10 border-blue-200' : 'bg-white dark:bg-[#111] border-neutral-200 dark:border-white/10'} ${selectedIds.has(item.id) ? 'ring-2 ring-black dark:ring-white' : ''}`}
-                        >
-                          <button onClick={(e) => { e.stopPropagation(); toggleSelect(item.id) }} className={`absolute top-3 left-3 z-10 transition-opacity ${selectedIds.has(item.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
-                            {selectedIds.has(item.id) ? <CheckSquare className="w-5 h-5 text-black dark:text-white" /> : <Square className="w-5 h-5 text-neutral-400" />}
+                  <div className="bg-[#1A1D27] rounded-3xl overflow-hidden">
+                    {newFilesList.map((file, i) => (
+                      <div 
+                        key={file.id} 
+                        onClick={() => selectedIds.size > 0 ? toggleSelect(file.id) : handleFileOpen(file)}
+                        className={`grid grid-cols-[auto_1fr_auto] md:grid-cols-[auto_1fr_100px_120px_80px_auto] gap-4 items-center px-4 md:px-6 py-4 cursor-pointer transition-colors group ${selectedIds.has(file.id) ? 'bg-[#5A62FB]/10' : 'hover:bg-[#202430]'} ${i !== newFilesList.length - 1 ? 'border-b border-white/5' : ''}`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <button onClick={(e) => { e.stopPropagation(); toggleSelect(file.id) }} className={`opacity-0 group-hover:opacity-100 transition-opacity ${selectedIds.has(file.id) ? 'opacity-100 text-[#5A62FB]' : 'text-neutral-500 hover:text-white'}`}>
+                            {selectedIds.has(file.id) ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
                           </button>
-                          <div className="w-16 h-16 flex items-center justify-center">
-                            {isFolder ? (
-                              <FolderIcon className="w-16 h-16 text-black dark:text-white" fill="currentColor" fillOpacity={0.1} />
-                            ) : (
-                              getFileIcon(item as TGFile)
-                            )}
+                          <div className="w-10 h-10 rounded-xl bg-white/5 flex items-center justify-center flex-shrink-0">
+                            {getFileIcon(file)}
                           </div>
-                          <div className="w-full text-center">
-                            <p className="text-sm font-medium truncate">{item.name}</p>
-                            <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
-                              {isFolder ? (item.createdAt ? format(new Date(item.createdAt), 'MMM d') : '--') : filesize((item as TGFile).size)}
-                            </p>
-                          </div>
-
-                          {/* Action buttons overlay for grid */}
-                          <div className="absolute top-2 right-2 flex flex-col gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-                            {!isFolder && (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleDownload(item as TGFile) }}
-                                className="p-1.5 bg-white/90 dark:bg-[#111]/90 hover:bg-neutral-100 dark:hover:bg-white/10 backdrop-blur shadow-sm rounded-lg text-neutral-600 dark:text-neutral-300 transition-all"
-                                title="Download"
-                              >
-                                <DownloadIcon className="w-4 h-4" />
-                              </button>
-                            )}
-                            <button
-                              onClick={(e) => { e.stopPropagation(); handleShare(item as TGFile) }}
-                              className="p-1.5 bg-white/90 dark:bg-[#111]/90 hover:bg-neutral-100 dark:hover:bg-white/10 backdrop-blur shadow-sm rounded-lg text-neutral-600 dark:text-neutral-300 transition-all"
-                              title="Share"
-                            >
-                              <Share2 className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={(e) => { e.stopPropagation(); handleDelete(item, isFolder) }}
-                              className="p-1.5 bg-white/90 dark:bg-[#111]/90 hover:bg-red-50 dark:hover:bg-red-500/10 backdrop-blur shadow-sm rounded-lg text-red-500 transition-all"
-                              title="Delete"
-                            >
-                              <TrashIcon className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </motion.div>
-                      )
-                    })}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium truncate text-white">{file.name}</p>
+                        </div>
+                        <div className="text-sm text-neutral-500 hidden sm:block truncate">
+                          {file.mimeType.split('/')[1] || 'Unknown'}
+                        </div>
+                        <div className="text-sm text-neutral-500 hidden md:block">
+                          {file.createdAt ? format(new Date(file.createdAt), 'dd.MM.yyyy') : '--'}
+                        </div>
+                        <div className="text-xs font-semibold px-2 py-1 rounded bg-white/5 text-neutral-400 hidden lg:block text-center truncate">
+                          .{file.name.split('.').pop()?.toLowerCase() || 'file'}
+                        </div>
+                        <div className="flex items-center gap-1 opacity-0 hover:opacity-100 transition-opacity" style={{ opacity: 1 /* Always visible on hover not working inline easily, using group */ }}>
+                           {/* Using standard buttons for actions */}
+                           <button onClick={(e) => { e.stopPropagation(); handleDownload(file) }} className="p-1.5 text-neutral-400 hover:text-white transition-colors"><DownloadIcon className="w-4 h-4" /></button>
+                           <button onClick={(e) => { e.stopPropagation(); handleDelete(file, false) }} className="p-1.5 text-neutral-400 hover:text-red-400 transition-colors"><TrashIcon className="w-4 h-4" /></button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                )}
-              </div>
-            </>
-          )}
+                </section>
+              )}
 
-          {/* ── Gallery Tab ── */}
-          {activeTab === 'gallery' && (
-            <div className="flex-1 overflow-auto grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+              {/* Shared with me (Grid) */}
+              {sharedFilesList.length > 0 && (
+                <section>
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-lg font-semibold text-white/90">Shared with me</h2>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                    {sharedFilesList.map(file => (
+                      <div 
+                        key={file.id} 
+                        onClick={() => selectedIds.size > 0 ? toggleSelect(file.id) : handleFileOpen(file)}
+                        className={`p-4 rounded-2xl cursor-pointer transition-colors flex flex-col items-center justify-center aspect-square group relative border ${selectedIds.has(file.id) ? 'bg-[#5A62FB]/10 border-[#5A62FB]/30' : 'bg-[#1A1D27] hover:bg-[#202430] border-transparent hover:border-white/5'}`}
+                      >
+                         <button onClick={(e) => { e.stopPropagation(); toggleSelect(file.id) }} className={`absolute top-2 left-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity ${selectedIds.has(file.id) ? 'opacity-100 text-[#5A62FB]' : 'text-neutral-500 hover:text-white'}`}>
+                           {selectedIds.has(file.id) ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5 bg-black/20 rounded" />}
+                         </button>
+                         <div className="w-12 h-12 mb-3 rounded-xl bg-white/5 flex items-center justify-center text-neutral-400">
+                           {getFileIcon(file)}
+                         </div>
+                         <p className="text-xs font-medium text-center truncate w-full text-neutral-300">{file.name}</p>
+                         
+                         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity rounded-2xl flex items-center justify-center gap-2">
+                           <button onClick={(e) => { e.stopPropagation(); handleDownload(file) }} className="p-1.5 bg-white/10 text-white rounded-lg hover:bg-white/20"><DownloadIcon className="w-4 h-4" /></button>
+                         </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+            </div>
+          ) : activeTab === 'files' || activeTab === 'overview' ? (
+            /* ── Folder Contents / Search Results ── */
+            <div className="animate-in fade-in">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-xl font-bold">
+                  {searchQuery ? 'Search Results' : (currentFolderId ? folders.find(f => f.id === currentFolderId)?.name : 'Dashboard files')}
+                </h2>
+                <div className="flex gap-2">
+                  <button onClick={() => setViewMode('grid')} className={`p-2 rounded-lg transition-colors ${viewMode === 'grid' ? 'bg-[#5A62FB] text-white' : 'bg-white/5 text-neutral-400 hover:text-white'}`}><LayoutGrid className="w-4 h-4" /></button>
+                  <button onClick={() => setViewMode('list')} className={`p-2 rounded-lg transition-colors ${viewMode === 'list' ? 'bg-[#5A62FB] text-white' : 'bg-white/5 text-neutral-400 hover:text-white'}`}><ListIcon className="w-4 h-4" /></button>
+                </div>
+              </div>
+              
+              {items.length === 0 ? (
+                <div className="flex flex-col items-center justify-center text-neutral-500 py-20">
+                  <FolderIcon className="w-16 h-16 opacity-20 mb-4" />
+                  <p>Nothing here yet</p>
+                </div>
+              ) : viewMode === 'list' ? (
+                <div className="bg-[#1A1D27] rounded-2xl overflow-hidden">
+                  <div className="grid grid-cols-[auto_1fr_auto] md:grid-cols-[auto_1fr_100px_150px_auto] gap-4 px-6 py-3 text-xs font-semibold text-neutral-500 uppercase tracking-wider border-b border-white/5">
+                    <div className="w-5"></div>
+                    <div>Name</div>
+                    <div>Size</div>
+                    <div>Date</div>
+                    <div></div>
+                  </div>
+                  {items.map(item => {
+                    const isFolder = item.type === 'folder'
+                    return (
+                      <div 
+                        key={item.id}
+                        onClick={() => selectedIds.size > 0 ? toggleSelect(item.id) : isFolder ? setCurrentFolderId(item.id) : handleFileOpen(item as TGFile)}
+                        className={`grid grid-cols-[auto_1fr_auto] md:grid-cols-[auto_1fr_100px_150px_auto] gap-4 items-center px-6 py-3 border-b border-white/5 transition-colors cursor-pointer group ${selectedIds.has(item.id) ? 'bg-[#5A62FB]/10' : 'hover:bg-[#202430]'}`}
+                      >
+                         <div className="flex items-center gap-3">
+                           <button onClick={(e) => { e.stopPropagation(); toggleSelect(item.id) }} className={`opacity-0 group-hover:opacity-100 transition-opacity ${selectedIds.has(item.id) ? 'opacity-100 text-[#5A62FB]' : 'text-neutral-500 hover:text-white'}`}>
+                             {selectedIds.has(item.id) ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+                           </button>
+                           <div className="w-5 flex justify-center">
+                              {isFolder ? <FolderIcon className="w-5 h-5 text-neutral-400" /> : getFileIcon(item as TGFile)}
+                           </div>
+                         </div>
+                         <div className="truncate font-medium text-sm text-white/90">{item.name}</div>
+                         <div className="text-sm text-neutral-500 hidden md:block">{isFolder ? '--' : filesize((item as TGFile).size)}</div>
+                         <div className="text-sm text-neutral-500 hidden md:block">{item.createdAt ? format(new Date(item.createdAt), 'dd.MM.yyyy') : '--'}</div>
+                          <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {!isFolder && <button onClick={(e) => { e.stopPropagation(); handleDownload(item as TGFile) }} className="p-1.5 text-neutral-400 hover:text-white"><DownloadIcon className="w-4 h-4" /></button>}
+                            <button onClick={(e) => { e.stopPropagation(); handleDelete(item, isFolder) }} className="p-1.5 text-neutral-400 hover:text-red-400"><TrashIcon className="w-4 h-4" /></button>
+                         </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+                  {items.map(item => {
+                    const isFolder = item.type === 'folder'
+                    return (
+                      <div 
+                        key={item.id}
+                        onClick={() => selectedIds.size > 0 ? toggleSelect(item.id) : isFolder ? setCurrentFolderId(item.id) : handleFileOpen(item as TGFile)}
+                        className={`p-4 rounded-2xl cursor-pointer transition-colors flex flex-col items-center justify-center aspect-square group relative border ${selectedIds.has(item.id) ? 'bg-[#5A62FB]/10 border-[#5A62FB]/30' : 'bg-[#1A1D27] hover:bg-[#202430] border-transparent hover:border-white/5'}`}
+                      >
+                         <button onClick={(e) => { e.stopPropagation(); toggleSelect(item.id) }} className={`absolute top-2 left-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity ${selectedIds.has(item.id) ? 'opacity-100 text-[#5A62FB]' : 'text-neutral-500 hover:text-white'}`}>
+                           {selectedIds.has(item.id) ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5 bg-black/20 rounded" />}
+                         </button>
+                         <div className="w-12 h-12 mb-3 rounded-xl bg-white/5 flex items-center justify-center text-neutral-400">
+                           {isFolder ? <FolderIcon className="w-6 h-6" /> : getFileIcon(item as TGFile)}
+                         </div>
+                         <p className="text-xs font-medium text-center truncate w-full text-neutral-300">{item.name}</p>
+                         
+                         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity rounded-2xl flex flex-col items-center justify-center gap-2">
+                           <div className="flex gap-2">
+                             {!isFolder && <button onClick={(e) => { e.stopPropagation(); handleDownload(item as TGFile) }} className="p-2 bg-white/10 text-white rounded-lg hover:bg-white/20"><DownloadIcon className="w-4 h-4" /></button>}
+                           </div>
+                           <button onClick={(e) => { e.stopPropagation(); handleDelete(item, isFolder) }} className="p-2 bg-red-500/20 text-red-400 rounded-lg hover:bg-red-500/40"><TrashIcon className="w-4 h-4" /></button>
+                         </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          ) : activeTab === 'gallery' ? (
+             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
               {mediaFiles.length === 0 ? (
-                <div className="col-span-full flex flex-col items-center justify-center text-neutral-400 py-20">
+                <div className="col-span-full flex flex-col items-center justify-center text-neutral-500 py-20">
                   <ImageIcon className="w-16 h-16 opacity-20 mb-4" />
                   <p>No media files found</p>
                 </div>
               ) : (
                 mediaFiles.map((file) => (
-                  <div key={file.id} onClick={() => { setViewingFile(file) }} className="aspect-square bg-neutral-100 dark:bg-[#111] rounded-2xl overflow-hidden cursor-pointer hover:shadow-lg transition-all relative group">
-                    <Thumbnail file={file} className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
-                      <button onClick={(e) => { e.stopPropagation(); handleDownload(file) }} className="p-2 bg-white/90 text-black rounded-lg mx-1 shadow-md hover:bg-white transition-all"><DownloadIcon className="w-5 h-5" /></button>
-                      <button onClick={(e) => { e.stopPropagation(); handleShare(file) }} className="p-2 bg-white/90 text-black rounded-lg mx-1 shadow-md hover:bg-white transition-all"><Share2 className="w-5 h-5" /></button>
+                  <div key={file.id} onClick={() => handleFileOpen(file)} className="aspect-square bg-[#1A1D27] rounded-2xl overflow-hidden cursor-pointer hover:ring-2 hover:ring-[#5A62FB] transition-all relative group">
+                    <Thumbnail file={file} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3">
+                      <p className="text-white text-xs truncate mb-2">{file.name}</p>
+                      <div className="flex gap-2">
+                        <button onClick={(e) => { e.stopPropagation(); handleDownload(file) }} className="p-1.5 bg-white/20 backdrop-blur text-white rounded hover:bg-white/40 transition-colors"><DownloadIcon className="w-4 h-4" /></button>
+                      </div>
                     </div>
                   </div>
                 ))
               )}
             </div>
-          )}
-
-          {/* ── Trash Tab ── */}
-          {activeTab === 'trash' && (
-            <div className="flex-1 overflow-auto">
+          ) : activeTab === 'trash' ? (
+             <div className="animate-in fade-in">
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-xl font-bold">Trash</h2>
                 {(trashFiles.length > 0 || trashFolders.length > 0) && (
-                  <button onClick={handleEmptyTrash} className="px-4 py-2 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition-colors font-medium text-sm">
+                  <button onClick={handleEmptyTrash} className="px-4 py-2 bg-red-500/10 text-red-400 rounded-xl hover:bg-red-500/20 transition-colors font-medium text-sm">
                     Empty Trash
                   </button>
                 )}
               </div>
               {trashFiles.length === 0 && trashFolders.length === 0 ? (
-                <div className="flex flex-col items-center justify-center text-neutral-400 py-20">
+                <div className="flex flex-col items-center justify-center text-neutral-500 py-20">
                   <Trash className="w-16 h-16 opacity-20 mb-4" />
                   <p>Trash is empty</p>
                 </div>
               ) : (
                 <div className="space-y-2">
                   {[...trashFolders.map(f => ({ ...f, type: 'folder' })), ...trashFiles.map(f => ({ ...f, type: 'file' }))].map(item => (
-                    <div key={item.id} className="flex items-center justify-between p-4 bg-white dark:bg-[#111] border border-neutral-200 dark:border-white/10 rounded-xl">
+                    <div key={item.id} className="flex items-center justify-between p-4 bg-[#1A1D27] rounded-xl hover:bg-[#202430] transition-colors">
                       <div className="flex items-center gap-3">
-                        {item.type === 'folder' ? <FolderIcon className="w-5 h-5 text-neutral-500" /> : <FileIcon className="w-5 h-5 text-neutral-500" />}
-                        <span className="font-medium text-sm">{item.name}</span>
+                        {item.type === 'folder' ? <FolderIcon className="w-5 h-5 text-neutral-400" /> : <FileIcon className="w-5 h-5 text-neutral-400" />}
+                        <span className="font-medium text-sm text-white/90">{item.name}</span>
                       </div>
-                      <button onClick={() => handleRestore(item.id, item.type)} className="p-2 text-neutral-500 hover:text-black dark:hover:text-white transition-colors" title="Restore">
+                      <button onClick={() => handleRestore(item.id, item.type as any)} className="p-2 text-neutral-400 hover:text-[#5A62FB] transition-colors" title="Restore">
                         <RotateCcw className="w-5 h-5" />
                       </button>
                     </div>
@@ -1045,70 +939,101 @@ export const Dashboard = () => {
                 </div>
               )}
             </div>
-          )}
-
-          {/* ── Stats Tab ── */}
-          {activeTab === 'stats' && stats && (
-            <div className="flex-1 overflow-auto space-y-6">
-              <h2 className="text-xl font-bold">Storage Dashboard</h2>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div className="p-6 bg-white dark:bg-[#111] border border-neutral-200 dark:border-white/10 rounded-2xl">
-                  <p className="text-sm text-neutral-500">Total Size</p>
-                  <p className="text-2xl font-bold mt-1">{filesize(stats.totalSize)}</p>
+          ) : activeTab === 'stats' && stats ? (
+             <div className="animate-in fade-in space-y-8">
+              <h2 className="text-xl font-bold">Storage Stats</h2>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+                <div className="p-6 bg-[#1A1D27] rounded-3xl">
+                  <div className="w-10 h-10 rounded-full bg-[#5A62FB]/10 flex items-center justify-center mb-4">
+                    <Cloud className="w-5 h-5 text-[#5A62FB]" />
+                  </div>
+                  <p className="text-sm text-neutral-400">Total Size</p>
+                  <p className="text-3xl font-bold mt-1 text-white">{filesize(stats.totalSize)}</p>
                 </div>
-                <div className="p-6 bg-white dark:bg-[#111] border border-neutral-200 dark:border-white/10 rounded-2xl">
-                  <p className="text-sm text-neutral-500">Total Files</p>
-                  <p className="text-2xl font-bold mt-1">{stats.totalFiles}</p>
+                <div className="p-6 bg-[#1A1D27] rounded-3xl">
+                   <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center mb-4">
+                    <FileIcon className="w-5 h-5 text-emerald-500" />
+                  </div>
+                  <p className="text-sm text-neutral-400">Total Files</p>
+                  <p className="text-3xl font-bold mt-1 text-white">{stats.totalFiles}</p>
                 </div>
-                <div className="p-6 bg-white dark:bg-[#111] border border-neutral-200 dark:border-white/10 rounded-2xl">
-                  <p className="text-sm text-neutral-500">Total Folders</p>
-                  <p className="text-2xl font-bold mt-1">{stats.totalFolders}</p>
+                <div className="p-6 bg-[#1A1D27] rounded-3xl">
+                   <div className="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center mb-4">
+                    <FolderIcon className="w-5 h-5 text-amber-500" />
+                  </div>
+                  <p className="text-sm text-neutral-400">Total Folders</p>
+                  <p className="text-3xl font-bold mt-1 text-white">{stats.totalFolders}</p>
                 </div>
               </div>
-              <h3 className="font-semibold text-lg mt-8">Breakdown by Type</h3>
+              
+              <h3 className="font-semibold text-lg text-white/90">Breakdown by Type</h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {stats.byType.map((t: any) => (
-                  <div key={t.category} className="p-4 bg-white dark:bg-[#111] border border-neutral-200 dark:border-white/10 rounded-xl flex justify-between items-center">
+                  <div key={t.category} className="p-4 bg-[#1A1D27] rounded-2xl flex justify-between items-center border border-transparent hover:border-white/5 transition-colors">
                     <div>
-                      <p className="font-medium text-sm">{t.category}</p>
+                      <p className="font-medium text-sm text-white">{t.category}</p>
                       <p className="text-xs text-neutral-500 mt-1">{t.count} files</p>
                     </div>
-                    <p className="font-semibold text-sm">{filesize(t.size)}</p>
+                    <p className="font-semibold text-sm text-white/80">{filesize(t.size)}</p>
                   </div>
                 ))}
               </div>
             </div>
-          )}
-        </main>
-      </div>
+          ) : null}
 
+        </div>
+      </main>
+
+      {/* Global Components */}
       <Uploader currentFolderId={currentFolderId} />
       <DownloadBar />
 
       <FileViewer
         file={viewingFile}
         onClose={() => setViewingFile(null)}
+        onDownload={handleDownload}
       />
+
+      {/* ── Create Folder Modal ── */}
+      <AnimatePresence>
+        {isCreatingFolder && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }} className="bg-[#1A1D27] rounded-3xl p-6 w-full max-w-md shadow-2xl border border-white/5">
+              <h2 className="text-xl font-bold mb-4 text-white">Create New Folder</h2>
+              <form onSubmit={handleCreateFolder}>
+                <input type="text" autoFocus value={newFolderName} onChange={(e) => setNewFolderName(e.target.value)} placeholder="Folder name" className="w-full px-4 py-3 border border-white/10 rounded-xl bg-[#0A0D14] text-white focus:ring-2 focus:ring-[#5A62FB] outline-none mb-6 transition-all" />
+                <div className="flex justify-end gap-3">
+                  <button type="button" onClick={() => setIsCreatingFolder(false)} className="px-5 py-2.5 text-neutral-400 hover:text-white hover:bg-white/5 rounded-xl transition-colors font-medium">Cancel</button>
+                  <button type="submit" disabled={!newFolderName.trim()} className="px-5 py-2.5 bg-[#5A62FB] text-white hover:bg-[#4d54d6] disabled:opacity-50 rounded-xl transition-colors font-medium shadow-sm">Create</button>
+                </div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ── Share Modal ── */}
       <AnimatePresence>
         {shareModalFile && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }} className="bg-white dark:bg-[#111] rounded-2xl p-6 w-full max-w-md shadow-2xl border border-neutral-200 dark:border-white/10">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }} className="bg-[#1A1D27] rounded-3xl p-6 w-full max-w-md shadow-2xl border border-white/5">
               <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-semibold">Share File</h2>
-                <button onClick={() => { setShareModalFile(null); setShareLink(null) }} className="p-2 hover:bg-neutral-100 dark:hover:bg-white/10 rounded-xl"><X className="w-5 h-5" /></button>
+                <h2 className="text-xl font-bold text-white">Share File</h2>
+                <button onClick={() => { setShareModalFile(null); setShareLink(null) }} className="p-2 text-neutral-400 hover:text-white hover:bg-white/10 rounded-xl transition-colors"><X className="w-5 h-5" /></button>
               </div>
-              <p className="text-sm text-neutral-500 mb-4">
-                Anyone with this link can preview and download <strong>{shareModalFile.name}</strong>. No account required.
+              <p className="text-sm text-neutral-400 mb-6 leading-relaxed">
+                Anyone with this link can preview and download <strong className="text-white">{shareModalFile.name}</strong>. No account required.
               </p>
               {shareLink ? (
-                <div className="flex items-center gap-2">
-                  <input readOnly value={shareLink} className="flex-1 px-3 py-2.5 bg-neutral-100 dark:bg-white/5 border border-transparent rounded-xl text-sm outline-none" />
-                  <button onClick={() => { navigator.clipboard.writeText(shareLink); toast.success('Copied') }} className="p-2.5 bg-black dark:bg-white text-white dark:text-black rounded-xl hover:opacity-80 transition-opacity"><Copy className="w-5 h-5" /></button>
+                <div className="flex flex-col gap-4">
+                  <div className="flex items-center gap-2">
+                    <input readOnly value={shareLink} className="flex-1 px-4 py-3 bg-[#0A0D14] border border-white/5 rounded-xl text-sm text-white outline-none" />
+                    <button onClick={() => { navigator.clipboard.writeText(shareLink); toast.success('Copied') }} className="p-3 bg-[#5A62FB] text-white rounded-xl hover:bg-[#4d54d6] transition-colors"><Copy className="w-5 h-5" /></button>
+                  </div>
+                  <button onClick={() => { setShareModalFile(null); setShareLink(null) }} className="w-full py-3 bg-white/5 text-white rounded-xl font-medium hover:bg-white/10 transition-colors">Close</button>
                 </div>
               ) : (
-                <button onClick={() => handleShare(shareModalFile)} className="w-full py-3 bg-black dark:bg-white text-white dark:text-black rounded-xl font-medium hover:opacity-80 transition-opacity">Generate Link</button>
+                <button onClick={() => handleShare(shareModalFile)} className="w-full py-3 bg-[#5A62FB] text-white rounded-xl font-medium hover:bg-[#4d54d6] transition-colors shadow-lg shadow-[#5A62FB]/20">Generate Link</button>
               )}
             </motion.div>
           </motion.div>
@@ -1118,43 +1043,70 @@ export const Dashboard = () => {
       {/* ── URL Upload Modal ── */}
       <AnimatePresence>
         {urlUploadOpen && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }} className="bg-white dark:bg-[#111] rounded-2xl p-6 w-full max-w-md shadow-2xl border border-neutral-200 dark:border-white/10">
-              <h2 className="text-xl font-semibold mb-4">Upload from URL</h2>
-              <input type="url" value={uploadUrl} onChange={(e) => setUploadUrl(e.target.value)} placeholder="https://example.com/file.mp4" className="w-full px-4 py-3 border border-neutral-200 dark:border-white/10 rounded-xl bg-neutral-50 dark:bg-[#0a0a0a] focus:ring-2 focus:ring-neutral-200 dark:focus:ring-white/20 outline-none mb-6 text-sm" />
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }} className="bg-[#1A1D27] rounded-3xl p-6 w-full max-w-md shadow-2xl border border-white/5">
+              <h2 className="text-xl font-bold mb-4 text-white">Upload from URL</h2>
+              <input type="url" value={uploadUrl} onChange={(e) => setUploadUrl(e.target.value)} placeholder="https://example.com/file.mp4" className="w-full px-4 py-3 border border-white/10 rounded-xl bg-[#0A0D14] focus:ring-2 focus:ring-[#5A62FB] outline-none mb-6 text-sm text-white" />
               {urlUploadProgress !== null && (
-                <div className="w-full bg-neutral-200 dark:bg-white/10 h-2 rounded-full mb-6 overflow-hidden">
-                  <div className="bg-black dark:bg-white h-full transition-all duration-300" style={{ width: `${urlUploadProgress}%` }} />
+                <div className="w-full bg-white/10 h-2 rounded-full mb-6 overflow-hidden">
+                  <div className="bg-[#5A62FB] h-full transition-all duration-300" style={{ width: `${urlUploadProgress}%` }} />
                 </div>
               )}
               <div className="flex justify-end gap-3">
-                <button onClick={() => setUrlUploadOpen(false)} className="px-5 py-2.5 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-white/5 rounded-xl transition-colors font-medium text-sm">Cancel</button>
-                <button onClick={handleUrlUpload} disabled={!uploadUrl.trim() || urlUploadProgress !== null} className="px-5 py-2.5 bg-black dark:bg-white text-white dark:text-black hover:bg-neutral-800 dark:hover:bg-neutral-200 disabled:opacity-50 rounded-xl transition-colors font-medium text-sm">Upload</button>
+                <button onClick={() => setUrlUploadOpen(false)} className="px-5 py-2.5 text-neutral-400 hover:text-white hover:bg-white/5 rounded-xl transition-colors font-medium text-sm">Cancel</button>
+                <button onClick={handleUrlUpload} disabled={!uploadUrl.trim() || urlUploadProgress !== null} className="px-5 py-2.5 bg-[#5A62FB] text-white hover:bg-[#4d54d6] disabled:opacity-50 rounded-xl transition-colors font-medium text-sm shadow-sm">Upload</button>
               </div>
             </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* ── Bulk Actions Bar ── */}
+      <AnimatePresence>
+        {selectedIds.size > 0 && (
+          <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 100, opacity: 0 }} className="fixed bottom-24 md:bottom-6 left-1/2 -translate-x-1/2 bg-[#5A62FB] text-white px-6 py-4 rounded-full shadow-2xl flex items-center gap-6 z-50">
+            <span className="font-semibold">{selectedIds.size} items selected</span>
+            <div className="flex items-center gap-3 border-l border-white/20 pl-6">
+              <button onClick={handleBulkDownload} className="flex items-center gap-2 hover:text-white/80 transition-colors">
+                <DownloadIcon className="w-4 h-4" /> Download
+              </button>
+              <button onClick={handleBulkDelete} className="flex items-center gap-2 hover:text-white/80 transition-colors">
+                <TrashIcon className="w-4 h-4" /> Delete
+              </button>
+              <button onClick={() => setSelectedIds(new Set())} className="p-1.5 hover:bg-white/10 rounded-full transition-colors ml-2">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Mobile Bottom Navigation ── */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-[#0A0D14] border-t border-white/5 flex justify-around items-center px-2 pb-6 pt-2 z-50">
+        <button onClick={() => { setActiveTab('overview'); setCurrentFolderId(null) }} className={`flex flex-col items-center gap-1 p-2 ${activeTab === 'overview' ? 'text-[#5A62FB]' : 'text-neutral-500'}`}>
+          <LayoutGrid className="w-5 h-5" />
+          <span className="text-[10px] font-medium">Drive</span>
+        </button>
+        <button onClick={() => { setActiveTab('files') }} className={`flex flex-col items-center gap-1 p-2 ${activeTab === 'files' ? 'text-[#5A62FB]' : 'text-neutral-500'}`}>
+          <FolderIcon className="w-5 h-5" />
+          <span className="text-[10px] font-medium">Files</span>
+        </button>
+        <div className="relative -top-5">
+          <button onClick={() => document.getElementById('global-file-input')?.click()} className="w-14 h-14 bg-[#5A62FB] text-white rounded-full flex items-center justify-center shadow-[0_8px_30px_rgba(90,98,251,0.4)] border-4 border-[#11141D] active:scale-95 transition-transform">
+            <Plus className="w-6 h-6" />
+          </button>
+        </div>
+        <button onClick={() => { setActiveTab('gallery') }} className={`flex flex-col items-center gap-1 p-2 ${activeTab === 'gallery' ? 'text-[#5A62FB]' : 'text-neutral-500'}`}>
+          <ImageIcon className="w-5 h-5" />
+          <span className="text-[10px] font-medium">Gallery</span>
+        </button>
+        <button onClick={() => { setActiveTab('trash') }} className={`flex flex-col items-center gap-1 p-2 ${activeTab === 'trash' ? 'text-[#5A62FB]' : 'text-neutral-500'}`}>
+          <Trash className="w-5 h-5" />
+          <span className="text-[10px] font-medium">Trash</span>
+        </button>
+      </div>
+
     </div>
   )
 }
 
-const CloudUploadIcon = (props: any) => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
-    <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242" />
-    <path d="M12 12v9" />
-    <path d="m16 16-4-4-4 4" />
-  </svg>
-)
-
-const SidebarNav = ({ activeTab, setActiveTab, onUrlUpload }: any) => (
-  <div className="space-y-1">
-    <button onClick={() => setActiveTab('files')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${activeTab === 'files' ? 'bg-neutral-100 dark:bg-white/10 font-medium' : 'hover:bg-neutral-50 dark:hover:bg-white/5 text-neutral-600 dark:text-neutral-400'}`}><FolderIcon className="w-5 h-5" /> <span className="text-sm">Files</span></button>
-    <button onClick={() => setActiveTab('gallery')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${activeTab === 'gallery' ? 'bg-neutral-100 dark:bg-white/10 font-medium' : 'hover:bg-neutral-50 dark:hover:bg-white/5 text-neutral-600 dark:text-neutral-400'}`}><ImageIcon className="w-5 h-5" /> <span className="text-sm">Gallery</span></button>
-    <button onClick={() => setActiveTab('trash')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${activeTab === 'trash' ? 'bg-neutral-100 dark:bg-white/10 font-medium' : 'hover:bg-neutral-50 dark:hover:bg-white/5 text-neutral-600 dark:text-neutral-400'}`}><Trash className="w-5 h-5" /> <span className="text-sm">Trash</span></button>
-    <button onClick={() => setActiveTab('stats')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${activeTab === 'stats' ? 'bg-neutral-100 dark:bg-white/10 font-medium' : 'hover:bg-neutral-50 dark:hover:bg-white/5 text-neutral-600 dark:text-neutral-400'}`}><BarChart3 className="w-5 h-5" /> <span className="text-sm">Storage Stats</span></button>
-    <div className="pt-4 mt-4 border-t border-neutral-200 dark:border-white/10">
-      <button onClick={onUrlUpload} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors hover:bg-neutral-50 dark:hover:bg-white/5 text-neutral-600 dark:text-neutral-400"><Globe className="w-5 h-5" /> <span className="text-sm">Upload from URL</span></button>
-    </div>
-  </div>
-)

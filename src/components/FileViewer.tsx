@@ -19,9 +19,10 @@ const MAX_PREVIEW_SIZE = 100 * 1024 * 1024 // 100 MB for non-video files
 interface FileViewerProps {
   file: TGFile | null
   onClose: () => void
+  onDownload?: (file: TGFile) => void
 }
 
-export const FileViewer = ({ file, onClose }: FileViewerProps) => {
+export const FileViewer = ({ file, onClose, onDownload }: FileViewerProps) => {
   const { sessionString, apiId, apiHash, userId, accountType } = useAuthStore()
   const [fileUrl, setFileUrl] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -153,14 +154,13 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
           </div>
           <div className="flex items-center gap-2 sm:gap-4 flex-shrink-0">
             {fileUrl && (
-              <a
-                href={fileUrl}
-                download={file.name}
+              <button
+                onClick={() => onDownload ? onDownload(file) : undefined}
                 className="p-2.5 bg-white/10 hover:bg-white/20 rounded-full transition-colors"
                 title="Download"
               >
                 <Download className="w-5 h-5" />
-              </a>
+              </button>
             )}
             <button
               onClick={onClose}
@@ -179,14 +179,7 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
               <p className="mb-2 font-medium">File is too large for web preview</p>
               <p className="text-sm text-gray-400 mb-6">Files over 100MB cannot be streamed reliably in the browser. Please download the file to view it.</p>
               <button
-                onClick={() => {
-                  import('../lib/download').then(async ({ downloadFileFromTelegram }) => {
-                    if (sessionString && apiId && apiHash) {
-                      const client = await getTelegramClient(sessionString, apiId, apiHash)
-                      downloadFileFromTelegram(client, file)
-                    }
-                  })
-                }}
+                onClick={() => onDownload && onDownload(file)}
                 className="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors flex items-center gap-2"
               >
                 <Download className="w-4 h-4" />
@@ -199,14 +192,7 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
               <p className="mb-2 font-medium">Video too large for preview</p>
               <p className="text-sm text-gray-400 mb-6">Videos over 20MB cannot be previewed in the browser. Please download the file to watch it.</p>
               <button
-                onClick={() => {
-                  import('../lib/download').then(async ({ downloadFileFromTelegram }) => {
-                    if (sessionString && apiId && apiHash) {
-                      const client = await getTelegramClient(sessionString, apiId, apiHash)
-                      downloadFileFromTelegram(client, file)
-                    }
-                  })
-                }}
+                onClick={() => onDownload && onDownload(file)}
                 className="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors flex items-center gap-2"
               >
                 <Download className="w-4 h-4" />
@@ -225,7 +211,7 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
               <p className="text-lg font-medium mb-1">{file.name}</p>
               <p className="text-sm text-gray-400">{(file.size / 1024 / 1024).toFixed(2)} MB — Click to play</p>
               {isVideoTelegramNoPreview && (
-                <p className="text-xs text-yellow-400 mt-3">Video preview is not available for Telegram accounts. Please download instead.</p>
+                <p className="text-xs text-yellow-400 mt-3">Video preview is not available. Please download instead.</p>
               )}
             </div>
           ) : isLoading && !fileUrl ? (
@@ -282,31 +268,23 @@ export const FileViewer = ({ file, onClose }: FileViewerProps) => {
                 <div className="text-white flex flex-col items-center">
                   <FileText className="w-16 h-16 mb-4 opacity-50" />
                   <p>Preview not available for this file type.</p>
-                  <a
-                    href={fileUrl || undefined}
-                    download={file.name}
+                  <button
+                    onClick={() => onDownload && onDownload(file)}
                     className="mt-4 px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors flex items-center gap-2"
                   >
                     <Download className="w-4 h-4" />
                     Download File
-                  </a>
+                  </button>
                 </div>
               )}
             </>
           ) : isVideoTelegramNoPreview ? (
             <div className="flex flex-col items-center text-neutral-400 p-8 text-center max-w-sm">
               <Play className="w-16 h-16 mb-4 opacity-50" />
-              <p className="text-lg mb-2">Video preview is not available for Telegram accounts.</p>
+              <p className="text-lg mb-2">Video preview is not available.</p>
               <p className="text-sm mb-6">Please download the file to view.</p>
               <button
-                onClick={() => {
-                  import('../lib/download').then(async ({ downloadFileFromTelegram }) => {
-                    if (sessionString && apiId && apiHash) {
-                      const client = await getTelegramClient(sessionString, apiId, apiHash)
-                      downloadFileFromTelegram(client, file)
-                    }
-                  })
-                }}
+                onClick={() => onDownload && onDownload(file)}
                 className="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors flex items-center gap-2 text-white"
               >
                 <Download className="w-4 h-4" />

@@ -79,7 +79,8 @@ export function apiUploadFile(
   _sessionToken: string,
   file: File,
   folderId: string | null,
-  onProgress?: (pct: number) => void
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal
 ): Promise<{ file: any }> {
   return new Promise((resolve, reject) => {
     const form = new FormData()
@@ -87,6 +88,14 @@ export function apiUploadFile(
     if (folderId) form.append('folderId', folderId)
 
     const xhr = new XMLHttpRequest()
+    
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        xhr.abort()
+        reject(new Error('Cancelled'))
+      })
+    }
+
     xhr.open('POST', `${API_BASE}/api/simple/upload`)
     xhr.setRequestHeader('x-user-id', userId)
 

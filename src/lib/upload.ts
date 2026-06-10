@@ -72,7 +72,8 @@ async function directUploadFile(
   client: TelegramClient,
   file: File,
   onProgress?: (progress: number) => void,
-  workers: number = 4
+  workers: number = 4,
+  signal?: AbortSignal
 ): Promise<Api.InputFile | Api.InputFileBig> {
   const fileSize = file.size
   const isLarge = fileSize > 10 * 1024 * 1024
@@ -96,6 +97,8 @@ async function directUploadFile(
   let completedParts = 0
 
   for (let i = 0; i < partCount; i += workers) {
+    if (signal?.aborted) throw new Error('Cancelled')
+
     const batch: Promise<void>[] = []
     let batchEnd = Math.min(i + workers, partCount)
 
@@ -110,6 +113,7 @@ async function directUploadFile(
         (async (partIndex: number, partBytes: Uint8Array) => {
           // Retry loop for transient failures
           while (true) {
+            if (signal?.aborted) throw new Error('Cancelled')
             let sender
             try {
               sender = await client.getSender(client.session.dcId)
@@ -186,7 +190,8 @@ export const uploadFileToTelegram = async (
   folderId: string | null,
   channelId: string,
   accessHash: string | null,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal
 ): Promise<TGFile> => {
 
   const uploadId = uuidv4()
@@ -210,7 +215,8 @@ export const uploadFileToTelegram = async (
         (progress) => {
           if (onProgress) onProgress(progress * 100)
         },
-        4
+        4,
+        signal
       )
 
       // Determine MIME type

@@ -12,6 +12,8 @@ import { apiUploadFile } from '../lib/simpleUserApi'
 import { v4 as uuidv4 } from 'uuid'
 import { toast } from 'react-hot-toast'
 
+const uploadControllers = new Map<string, AbortController>()
+
 interface UploaderProps {
   currentFolderId: string | null
 }
@@ -51,18 +53,20 @@ export const Uploader = ({ currentFolderId }: UploaderProps) => {
       try {
         setTaskStatus(taskId, 'uploading')
 
+        const controller = new AbortController()
+        uploadControllers.set(taskId, controller)
+
         if (accountType === 'simple') {
-          // ── Simple user: upload via Railway server (reliable, no browser WebSocket issues) ─
-          // File goes: Browser → Railway → Telegram
-          // This avoids unreliable browser-to-Telegram WebSocket connections.
           const result = await apiUploadFile(
             userId, userId,
             file,
             currentFolderId,
-            (pct) => updateTaskProgress(taskId, pct)
+            (pct) => updateTaskProgress(taskId, pct),
+            controller.signal
           )
           addFile(result.file)
           setTaskStatus(taskId, 'completed')
+          uploadControllers.delete(taskId)
 
         } else {
           // ── Telegram user: upload via browser GramJS ────────────────────
@@ -84,16 +88,23 @@ export const Uploader = ({ currentFolderId }: UploaderProps) => {
           const tgFile = await uploadFileToTelegram(
             client, file, currentFolderId,
             targetChannelId, targetAccessHash,
-            (pct) => updateTaskProgress(taskId, pct)
+            (pct) => updateTaskProgress(taskId, pct),
+            controller.signal
           )
           addFile(tgFile)
           setTaskStatus(taskId, 'completed')
+          uploadControllers.delete(taskId)
           await syncToMetadataChannel(client)
         }
 
       } catch (error: any) {
-        setTaskStatus(taskId, 'error', error.message)
-        toast.error(`Failed to upload ${file.name}: ${error.message}`)
+        if (error.name === 'AbortError' || error.message === 'Cancelled') {
+          setTaskStatus(taskId, 'error', 'Cancelled')
+        } else {
+          setTaskStatus(taskId, 'error', error.message)
+          toast.error(`Failed to upload ${file.name}: ${error.message}`)
+        }
+        uploadControllers.delete(taskId)
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -138,7 +149,7 @@ export const Uploader = ({ currentFolderId }: UploaderProps) => {
         <motion.div
           initial={{ y: 100, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
-          className="fixed bottom-6 right-6 w-96 bg-white dark:bg-[#111] rounded-2xl shadow-2xl overflow-hidden z-40 border border-neutral-200 dark:border-white/10 flex flex-col max-h-[500px]"
+          className="fixed bottom-24 md:bottom-6 right-4 md:right-6 w-[calc(100%-2rem)] md:w-96 bg-white dark:bg-[#111] rounded-2xl shadow-2xl overflow-hidden z-[60] border border-neutral-200 dark:border-white/10 flex flex-col max-h-[400px] md:max-h-[500px]"
         >
           <div
             className="flex items-center justify-between p-4 bg-neutral-50/80 dark:bg-[#0a0a0a]/50 backdrop-blur-md border-b border-neutral-200 dark:border-white/10 cursor-pointer"
@@ -197,7 +208,15 @@ export const Uploader = ({ currentFolderId }: UploaderProps) => {
                             />
                           </div>
                           <button
-                            onClick={(e) => { e.stopPropagation(); setTaskStatus(task.id, 'error', 'Cancelled') }}
+                            onClick={(e) => { 
+                              e.stopPropagation()
+                              const ctrl = uploadControllers.get(task.id)
+                              if (ctrl) {
+                                ctrl.abort()
+                              } else {
+                                setTaskStatus(task.id, 'error', 'Cancelled')
+                              }
+                            }}
                             className="p-1 text-neutral-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10 rounded-md transition-colors"
                             title="Cancel upload"
                           >

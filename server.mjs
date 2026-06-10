@@ -1185,10 +1185,12 @@ app.get('/api/simple/stats', requireUser, async (req, res) => {
 // Static files (JS, CSS, images)
 app.use(express.static(DIST))
 
-// SPA fallback: send index.html for any unknown route
-// Express 5 / path-to-regexp v8+ requires named catch-all: '/{*splat}' instead of '*'
-app.get('/{*splat}', (_req, res) => {
-  res.sendFile(join(DIST, 'index.html'))
+// SPA fallback: send index.html for any non-API GET request
+app.use((req, res, next) => {
+  if (req.method === 'GET' && !req.path.startsWith('/api')) {
+    return res.sendFile(join(DIST, 'index.html'))
+  }
+  next()
 })
 
 // ── Start ─────────────────────────────────────────────────────────────────
