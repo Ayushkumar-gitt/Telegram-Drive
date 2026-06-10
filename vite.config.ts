@@ -17,7 +17,8 @@ export default defineConfig({
         enabled: true
       },
       workbox: {
-        maximumFileSizeToCacheInBytes: 5000000 // Increase limit to 5MB
+        maximumFileSizeToCacheInBytes: 5000000, // Increase limit to 5MB
+        navigateFallbackDenylist: [/^\/api\//],  // Don't intercept API routes
       },
       manifest: {
         name: 'Cloud Space',
