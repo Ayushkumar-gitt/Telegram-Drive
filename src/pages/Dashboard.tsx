@@ -1100,10 +1100,7 @@ export const Dashboard = () => {
                 <button onClick={() => { setShareModalFile(null); setShareLink(null) }} className="p-2 hover:bg-neutral-100 dark:hover:bg-white/10 rounded-xl"><X className="w-5 h-5" /></button>
               </div>
               <p className="text-sm text-neutral-500 mb-4">
-                {accountType === 'telegram'
-                  ? <>This is the Telegram post link for <strong>{shareModalFile.name}</strong>. Share it with anyone who has access to the channel.</>
-                  : <>Anyone with this link can download <strong>{shareModalFile.name}</strong>. No account required.</>
-                }
+                Anyone with this link can preview and download <strong>{shareModalFile.name}</strong>. No account required.
               </p>
               {shareLink ? (
                 <div className="flex items-center gap-2">

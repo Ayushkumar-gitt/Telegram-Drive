@@ -3,6 +3,7 @@ import { Toaster } from 'react-hot-toast'
 import { Login } from './pages/Login'
 import { SimpleLogin } from './pages/SimpleLogin'
 import { Dashboard } from './pages/Dashboard'
+import { SharePage } from './pages/SharePage'
 import { useAuthStore } from './store/auth'
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
@@ -22,6 +23,7 @@ function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/simple" element={<SimpleLogin />} />
+        <Route path="/share/:linkId" element={<SharePage />} />
         <Route
           path="/dashboard"
           element={
