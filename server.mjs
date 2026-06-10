@@ -1197,8 +1197,8 @@ const PORT = process.env.PORT || 3000   // Railway sets PORT automatically
 async function start() {
   try {
     await ensureTables()
-    await getTgClient()  // pre-connect on startup so first request is instant
 
+    // Start listening FIRST so Railway healthchecks pass instantly
     app.listen(PORT, () => {
       console.log(`\n⭐  Cloud Space server running on port ${PORT}`)
       console.log('    GET  /api/tg-credentials    ← admin API ID/Hash for phone+OTP login')
@@ -1214,6 +1214,12 @@ async function start() {
       console.log('    DEL  /api/simple/folders/:id')
       console.log('    GET  /*                     ← React SPA\n')
     })
+
+    // Connect to Telegram in the background so it doesn't block startup
+    getTgClient().catch(err => {
+      console.error('❌ Telegram connection failed in background:', err.message)
+    })
+
   } catch (err) {
     console.error('❌  Startup failed:', err.message)
     console.error('    Check ADMIN_API_ID, ADMIN_API_HASH, ADMIN_SESSION_STRING, DATABASE_URL')
