@@ -45,7 +45,7 @@ export const SharePage = () => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [previewing, setPreviewing] = useState(false)
-  const [downloading, setDownloading] = useState(false)
+
 
   useEffect(() => {
     if (!linkId) return
@@ -73,18 +73,7 @@ export const SharePage = () => {
   // Only allow preview for files under 50MB
   const canPreview = file && (isImage || isVideo || isAudio) && file.size < 50 * 1024 * 1024
 
-  const handleDownload = () => {
-    setDownloading(true)
-    // Use an anchor click for download
-    const a = document.createElement('a')
-    a.href = downloadUrl
-    a.download = file?.name || 'download'
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    // Reset after a delay
-    setTimeout(() => setDownloading(false), 3000)
-  }
+
 
   if (loading) {
     return (
@@ -201,23 +190,15 @@ export const SharePage = () => {
 
               {/* Action buttons */}
               <div className="flex flex-col gap-3">
-                <button
-                  onClick={handleDownload}
-                  disabled={downloading}
-                  className={`w-full py-3.5 px-6 rounded-xl font-medium text-white bg-gradient-to-r ${colorGradient} hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-2 shadow-lg disabled:opacity-60`}
+                <a
+                  href={downloadUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`w-full py-3.5 px-6 rounded-xl font-medium text-white bg-gradient-to-r ${colorGradient} hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-2 shadow-lg no-underline`}
                 >
-                  {downloading ? (
-                    <>
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                      Starting download...
-                    </>
-                  ) : (
-                    <>
-                      <Download className="w-5 h-5" />
-                      Download File
-                    </>
-                  )}
-                </button>
+                  <Download className="w-5 h-5" />
+                  Download File
+                </a>
 
                 {canPreview && (
                   <button
