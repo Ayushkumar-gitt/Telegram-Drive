@@ -27,7 +27,8 @@ import {
   Cloud,
   CheckSquare,
   Square,
-  LogOut
+  LogOut,
+  FolderPlus
 } from 'lucide-react'
 import { Api } from 'telegram'
 import { v4 as uuidv4 } from 'uuid'
@@ -661,13 +662,20 @@ export const Dashboard = () => {
             <button onClick={() => setCurrentFolderId(null)} className={`p-1.5 rounded-lg transition-colors ${currentFolderId ? 'hover:bg-white/10 text-white' : 'opacity-50 cursor-not-allowed'}`}>
               <ArrowLeft className="w-5 h-5" />
             </button>
-            <div className="md:hidden flex items-center gap-2 text-[#5A62FB] font-bold">
-              <Cloud className="w-5 h-5" />
-              Cloud Space
+            <div className="md:hidden flex items-center gap-3">
+              <button onClick={() => setIsCreatingFolder(true)} className="p-1.5 text-neutral-400 hover:text-white transition-colors" title="Create Folder">
+                <FolderPlus className="w-5 h-5" />
+              </button>
+              <div className="flex items-center gap-2 bg-white/5 border border-white/5 rounded-full pl-1 pr-3 py-1">
+                <div className="w-6 h-6 rounded-full bg-gradient-to-tr from-[#5A62FB] to-purple-500 flex items-center justify-center text-white text-xs font-bold shadow-sm">
+                  {userId ? userId.charAt(0).toUpperCase() : 'U'}
+                </div>
+                <span className="text-sm font-medium text-white truncate max-w-[100px]">{userId || 'User'}</span>
+              </div>
+              <button onClick={handleLogout} className="p-1.5 text-neutral-400 hover:text-white transition-colors" title="Logout">
+                <LogOut className="w-5 h-5" />
+              </button>
             </div>
-            <button onClick={handleLogout} className="md:hidden p-1.5 text-neutral-400 hover:text-white transition-colors">
-              <LogOut className="w-5 h-5" />
-            </button>
           </div>
           
           <div className="flex items-center gap-4 w-full md:w-auto">
@@ -794,8 +802,8 @@ export const Dashboard = () => {
                          </div>
                          <p className="text-xs font-medium text-center truncate w-full text-neutral-300">{file.name}</p>
                          
-                         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity rounded-2xl flex items-center justify-center gap-2">
-                           <button onClick={(e) => { e.stopPropagation(); handleDownload(file) }} className="p-1.5 bg-white/10 text-white rounded-lg hover:bg-white/20"><DownloadIcon className="w-4 h-4" /></button>
+                         <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 z-20">
+                           <button onClick={(e) => { e.stopPropagation(); handleDownload(file) }} className="p-1.5 bg-black/40 backdrop-blur-md text-white rounded-lg hover:bg-black/60 shadow-sm border border-white/10"><DownloadIcon className="w-4 h-4" /></button>
                          </div>
                       </div>
                     ))}
@@ -874,12 +882,9 @@ export const Dashboard = () => {
                            {isFolder ? <FolderIcon className="w-6 h-6" /> : getFileIcon(item as TGFile)}
                          </div>
                          <p className="text-xs font-medium text-center truncate w-full text-neutral-300">{item.name}</p>
-                         
-                         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity rounded-2xl flex flex-col items-center justify-center gap-2">
-                           <div className="flex gap-2">
-                             {!isFolder && <button onClick={(e) => { e.stopPropagation(); handleDownload(item as TGFile) }} className="p-2 bg-white/10 text-white rounded-lg hover:bg-white/20"><DownloadIcon className="w-4 h-4" /></button>}
-                           </div>
-                           <button onClick={(e) => { e.stopPropagation(); handleDelete(item, isFolder) }} className="p-2 bg-red-500/20 text-red-400 rounded-lg hover:bg-red-500/40"><TrashIcon className="w-4 h-4" /></button>
+                         <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col gap-1 z-20">
+                           {!isFolder && <button onClick={(e) => { e.stopPropagation(); handleDownload(item as TGFile) }} className="p-1.5 bg-black/40 backdrop-blur-md text-white rounded-lg hover:bg-black/60 shadow-sm border border-white/10"><DownloadIcon className="w-4 h-4" /></button>}
+                           <button onClick={(e) => { e.stopPropagation(); handleDelete(item, isFolder) }} className="p-1.5 bg-black/40 backdrop-blur-md text-red-400 rounded-lg hover:bg-black/60 shadow-sm border border-white/10"><TrashIcon className="w-4 h-4" /></button>
                          </div>
                       </div>
                     )
