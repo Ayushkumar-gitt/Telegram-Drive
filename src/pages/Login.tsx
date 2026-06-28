@@ -288,6 +288,21 @@ export const Login = () => {
           </AnimatePresence>
         </div>
       </motion.div>
+
+      <div style={{
+        position: 'absolute',
+        bottom: '24px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        fontFamily: 'monospace',
+        fontSize: '13px',
+        color: 'rgba(255, 255, 255, 0.8)',
+        letterSpacing: '0.15em',
+        pointerEvents: 'none',
+        userSelect: 'none',
+      }}>
+        MADE BY AYUSH
+      </div>
     </div>
   )
 }
