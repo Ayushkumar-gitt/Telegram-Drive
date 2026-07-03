@@ -529,6 +529,7 @@ export const Dashboard = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab])
 
+
   // ── Gallery media files ──────────────────────────────────────────────────
   const mediaFiles = useMemo(() => files.filter(f => !f.isTrashed && (f.mimeType?.startsWith('image/') || f.mimeType?.startsWith('video/'))), [files])
 
@@ -659,6 +660,11 @@ export const Dashboard = () => {
         {/* Top Header Row */}
         <div className="flex flex-col md:flex-row md:items-center justify-between p-6 md:p-8 pb-4 gap-4">
           <div className="flex items-center justify-between md:justify-start w-full md:w-auto gap-3 text-neutral-500">
+            {/* Mobile: Cloud Space branding on left */}
+            <div className="md:hidden flex items-center gap-1.5">
+              <Cloud className="w-4 h-4 text-[#5A62FB]" />
+              <span className="text-sm font-bold tracking-tight text-[#5A62FB]">Cloud Space</span>
+            </div>
             <button onClick={() => setCurrentFolderId(null)} className={`p-1.5 rounded-lg transition-colors ${currentFolderId ? 'hover:bg-white/10 text-white' : 'opacity-50 cursor-not-allowed'}`}>
               <ArrowLeft className="w-5 h-5" />
             </button>

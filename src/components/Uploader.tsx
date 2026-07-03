@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useDropzone } from 'react-dropzone'
 import { X, UploadCloud, File, AlertCircle, CheckCircle2 } from 'lucide-react'
@@ -115,6 +115,36 @@ export const Uploader = ({ currentFolderId }: UploaderProps) => {
     noClick: true,
     noKeyboard: true
   })
+
+  // ── Clipboard paste-to-upload ─────────────────────────────────────────────
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      // Don't intercept if user is typing in an input/textarea
+      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea') return
+
+      const items = e.clipboardData?.items
+      if (!items) return
+
+      const filesToUpload: File[] = []
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        if (item.kind === 'file') {
+          const file = item.getAsFile()
+          if (file) filesToUpload.push(file)
+        }
+      }
+
+      if (filesToUpload.length > 0) {
+        e.preventDefault()
+        toast.success(`Pasting ${filesToUpload.length} file${filesToUpload.length > 1 ? 's' : ''}…`)
+        onDrop(filesToUpload)
+      }
+    }
+
+    document.addEventListener('paste', handlePaste)
+    return () => document.removeEventListener('paste', handlePaste)
+  }, [onDrop])
 
   const dragOverlay = isDragActive && (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm border-2 border-white/20 border-dashed m-4 rounded-2xl pointer-events-none transition-all">

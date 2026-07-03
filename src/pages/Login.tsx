@@ -290,16 +290,18 @@ export const Login = () => {
       </motion.div>
 
       <div style={{
-        position: 'absolute',
-        bottom: '24px',
+        position: 'fixed',
+        bottom: '12px',
         left: '50%',
         transform: 'translateX(-50%)',
         fontFamily: 'monospace',
-        fontSize: '13px',
+        fontSize: '11px',
         color: 'rgba(255, 255, 255, 0.8)',
         letterSpacing: '0.15em',
         pointerEvents: 'none',
         userSelect: 'none',
+        zIndex: 50,
+        whiteSpace: 'nowrap',
       }}>
         MADE BY AYUSH
       </div>
