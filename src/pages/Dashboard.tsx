@@ -4,7 +4,7 @@ import { useFileSystemStore, type TGFile, type TGFolder } from '../store/filesys
 import { useAuthStore } from '../store/auth'
 import { useDownloadStore } from '../store/download'
 import { getTelegramClient, resetClient } from '../lib/telegram'
-import { apiListFiles, apiCreateFolder, apiTrashItem, apiRestoreItem, apiListTrash, apiEmptyTrash, apiCreateShareLink, apiGetStats, apiUploadFromUrl } from '../lib/simpleUserApi'
+import { apiListFiles, apiCreateFolder, apiTrashItem, apiRestoreItem, apiListTrash, apiEmptyTrash, apiCreateShareLink, apiGetStats, apiUploadFromUrl, apiRenameFile, apiSuggestName, apiSuggestNameFromImage } from '../lib/simpleUserApi'
 import { format } from 'date-fns'
 import { filesize } from 'filesize'
 import {
@@ -28,7 +28,12 @@ import {
   CheckSquare,
   Square,
   LogOut,
-  FolderPlus
+  FolderPlus,
+  Pencil,
+  Sparkles,
+  Type,
+  Wand2,
+  Loader2
 } from 'lucide-react'
 import { Api } from 'telegram'
 import { v4 as uuidv4 } from 'uuid'
@@ -87,6 +92,16 @@ export const Dashboard = () => {
   const [urlUploadProgress, setUrlUploadProgress] = useState<number | null>(null)
   const [stats, setStats] = useState<any>(null)
   const [isInitializing, setIsInitializing] = useState(true)
+
+  // ── Rename state ──
+  const [renameFile, setRenameFile] = useState<TGFile | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [isAISuggesting, setIsAISuggesting] = useState(false)
+
+  // ── OCR / Extract Text state ──
+  const [ocrFile, setOcrFile] = useState<TGFile | null>(null)
+  const [ocrText, setOcrText] = useState('')
+  const [isExtracting, setIsExtracting] = useState(false)
 
   // Initialize: load file list
   // Simple users: load from Railway server DB (lightweight JSON, zero TG connection needed)
@@ -491,6 +506,108 @@ export const Dashboard = () => {
     } catch { toast.error('Failed to load stats') }
   }
 
+  // ── Rename handler ──────────────────────────────────────────────────────
+  const openRenameModal = (file: TGFile) => {
+    setRenameFile(file)
+    setRenameValue(file.name)
+    setIsAISuggesting(false)
+  }
+
+  const handleRename = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!renameFile || !renameValue.trim() || !userId) return
+    try {
+      if (accountType === 'simple') {
+        await apiRenameFile(userId, renameFile.id, renameValue.trim())
+      }
+      useFileSystemStore.getState().renameFile(renameFile.id, renameValue.trim())
+      if (accountType === 'telegram' && sessionString && apiId && apiHash) {
+        const client = await getTelegramClient(sessionString, apiId, apiHash)
+        await syncToMetadataChannel(client)
+      }
+      toast.success('File renamed')
+      setRenameFile(null)
+    } catch (err: any) {
+      toast.error(err.message ?? 'Rename failed')
+    }
+  }
+
+  const handleAISuggestName = async () => {
+    if (!renameFile || !userId) return
+    setIsAISuggesting(true)
+    try {
+      const isImage = renameFile.mimeType?.startsWith('image/')
+      let result: { suggestedName: string }
+      if (isImage && accountType === 'simple') {
+        // For images on simple accounts, use vision-based analysis
+        result = await apiSuggestNameFromImage(userId, renameFile.id, renameFile.name)
+      } else {
+        result = await apiSuggestName(userId, renameFile.name, renameFile.mimeType, renameFile.size)
+      }
+      setRenameValue(result.suggestedName)
+      toast.success('AI suggested a name!')
+    } catch (err: any) {
+      toast.error(err.message ?? 'AI suggestion failed')
+    } finally {
+      setIsAISuggesting(false)
+    }
+  }
+
+  // ── OCR / Extract Text handler ──────────────────────────────────────────
+  const handleExtractText = async (file: TGFile) => {
+    setOcrFile(file)
+    setOcrText('')
+    setIsExtracting(true)
+    try {
+      // We need the image URL. Check the session cache first, otherwise download it.
+      let imageUrl: string | null = null
+
+      if (accountType === 'simple') {
+        const SIMPLE_API = import.meta.env.DEV ? 'http://localhost:3000' : ''
+        imageUrl = `${SIMPLE_API}/api/simple/download/${file.id}?userId=${userId}`
+      } else {
+        // For telegram users, download via GramJS
+        if (!sessionString || !apiId || !apiHash) throw new Error('Not authenticated')
+        const client = await getTelegramClient(sessionString, apiId, apiHash)
+        let peer: any = Number(file.channelId)
+        if (file.accessHash) {
+          const BigIntConstructor = (window as any).BigInt || globalThis.BigInt || Number
+          const { Api: TgApi } = await import('telegram')
+          peer = new TgApi.InputPeerChannel({
+            channelId: BigIntConstructor(file.channelId.replace('-100', '')) as any,
+            accessHash: BigIntConstructor(file.accessHash) as any
+          })
+        }
+        const messages = await client.getMessages(peer, { ids: [file.messageId] })
+        if (messages.length > 0 && messages[0].media) {
+          const buffer = await client.downloadMedia(messages[0], { workers: 4 } as any)
+          if (buffer) {
+            const { Buffer: Buf } = await import('buffer')
+            const blob = new Blob([Buf.from(buffer as ArrayBuffer)], { type: file.mimeType })
+            imageUrl = URL.createObjectURL(blob)
+          }
+        }
+      }
+
+      if (!imageUrl) throw new Error('Could not load image for OCR')
+
+      const Tesseract = await import('tesseract.js')
+      const result = await Tesseract.recognize(imageUrl, 'eng', {
+        logger: (m: any) => {
+          if (m.status === 'recognizing text' && m.progress) {
+            // Progress is 0-1
+          }
+        }
+      })
+      setOcrText(result.data.text || 'No text detected in this image.')
+    } catch (err: any) {
+      console.error('OCR error:', err)
+      setOcrText('Failed to extract text: ' + (err.message || 'Unknown error'))
+    } finally {
+      setIsExtracting(false)
+    }
+  }
+
   // ── Multi-select ─────────────────────────────────────────────────────────
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
@@ -778,6 +895,7 @@ export const Dashboard = () => {
                         </div>
                         <div className="flex items-center gap-1 opacity-0 hover:opacity-100 transition-opacity" style={{ opacity: 1 /* Always visible on hover not working inline easily, using group */ }}>
                            {/* Using standard buttons for actions */}
+                           <button onClick={(e) => { e.stopPropagation(); openRenameModal(file) }} className="p-1.5 text-neutral-400 hover:text-[#5A62FB] transition-colors" title="Rename"><Pencil className="w-4 h-4" /></button>
                            <button onClick={(e) => { e.stopPropagation(); handleDownload(file) }} className="p-1.5 text-neutral-400 hover:text-white transition-colors"><DownloadIcon className="w-4 h-4" /></button>
                            <button onClick={(e) => { e.stopPropagation(); handleDelete(file, false) }} className="p-1.5 text-neutral-400 hover:text-red-400 transition-colors"><TrashIcon className="w-4 h-4" /></button>
                         </div>
@@ -864,8 +982,9 @@ export const Dashboard = () => {
                          <div className="text-sm text-neutral-500 hidden md:block">{isFolder ? '--' : filesize((item as TGFile).size)}</div>
                          <div className="text-sm text-neutral-500 hidden md:block">{item.createdAt ? format(new Date(item.createdAt), 'dd.MM.yyyy') : '--'}</div>
                           <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            {!isFolder && <button onClick={(e) => { e.stopPropagation(); handleDownload(item as TGFile) }} className="p-1.5 text-neutral-400 hover:text-white"><DownloadIcon className="w-4 h-4" /></button>}
-                            <button onClick={(e) => { e.stopPropagation(); handleDelete(item, isFolder) }} className="p-1.5 text-neutral-400 hover:text-red-400"><TrashIcon className="w-4 h-4" /></button>
+                             {!isFolder && <button onClick={(e) => { e.stopPropagation(); openRenameModal(item as TGFile) }} className="p-1.5 text-neutral-400 hover:text-[#5A62FB]" title="Rename"><Pencil className="w-4 h-4" /></button>}
+                             {!isFolder && <button onClick={(e) => { e.stopPropagation(); handleDownload(item as TGFile) }} className="p-1.5 text-neutral-400 hover:text-white"><DownloadIcon className="w-4 h-4" /></button>}
+                             <button onClick={(e) => { e.stopPropagation(); handleDelete(item, isFolder) }} className="p-1.5 text-neutral-400 hover:text-red-400"><TrashIcon className="w-4 h-4" /></button>
                          </div>
                       </div>
                     )
@@ -912,6 +1031,8 @@ export const Dashboard = () => {
                     <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3">
                       <p className="text-white text-xs truncate mb-2">{file.name}</p>
                       <div className="flex gap-2">
+                        {file.mimeType?.startsWith('image/') && <button onClick={(e) => { e.stopPropagation(); handleExtractText(file) }} className="p-1.5 bg-white/20 backdrop-blur text-white rounded hover:bg-white/40 transition-colors" title="Extract Text (OCR)"><Type className="w-4 h-4" /></button>}
+                        <button onClick={(e) => { e.stopPropagation(); openRenameModal(file) }} className="p-1.5 bg-white/20 backdrop-blur text-white rounded hover:bg-white/40 transition-colors" title="Rename"><Pencil className="w-4 h-4" /></button>
                         <button onClick={(e) => { e.stopPropagation(); handleDownload(file) }} className="p-1.5 bg-white/20 backdrop-blur text-white rounded hover:bg-white/40 transition-colors"><DownloadIcon className="w-4 h-4" /></button>
                       </div>
                     </div>
@@ -1003,6 +1124,7 @@ export const Dashboard = () => {
         file={viewingFile}
         onClose={() => setViewingFile(null)}
         onDownload={handleDownload}
+        onExtractText={handleExtractText}
       />
 
       {/* ── Create Folder Modal ── */}
@@ -1067,6 +1189,113 @@ export const Dashboard = () => {
                 <button onClick={() => setUrlUploadOpen(false)} className="px-5 py-2.5 text-neutral-400 hover:text-white hover:bg-white/5 rounded-xl transition-colors font-medium text-sm">Cancel</button>
                 <button onClick={handleUrlUpload} disabled={!uploadUrl.trim() || urlUploadProgress !== null} className="px-5 py-2.5 bg-[#5A62FB] text-white hover:bg-[#4d54d6] disabled:opacity-50 rounded-xl transition-colors font-medium text-sm shadow-sm">Upload</button>
               </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Rename Modal ── */}
+      <AnimatePresence>
+        {renameFile && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[200] p-4">
+            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }} className="bg-[#1A1D27] rounded-3xl p-4 sm:p-6 w-full max-w-md shadow-2xl border border-white/5">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                  <Pencil className="w-5 h-5 text-[#5A62FB]" />
+                  Rename File
+                </h2>
+                <button onClick={() => setRenameFile(null)} className="p-2 text-neutral-400 hover:text-white hover:bg-white/10 rounded-xl transition-colors"><X className="w-5 h-5" /></button>
+              </div>
+              <form onSubmit={handleRename}>
+                <div className="relative mb-4">
+                  <input
+                    type="text"
+                    autoFocus
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    placeholder="Enter new filename"
+                    className="w-full px-4 py-3 pr-12 border border-white/10 rounded-xl bg-[#0A0D14] text-white focus:ring-2 focus:ring-[#5A62FB] outline-none transition-all"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAISuggestName}
+                  disabled={isAISuggesting}
+                  className="w-full mb-4 px-4 py-3 bg-gradient-to-r from-[#5A62FB]/10 to-purple-500/10 border border-[#5A62FB]/20 rounded-xl text-sm font-medium text-[#5A62FB] hover:from-[#5A62FB]/20 hover:to-purple-500/20 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isAISuggesting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      AI is thinking...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4" />
+                      Suggest Name with AI
+                    </>
+                  )}
+                </button>
+                {renameFile.mimeType?.startsWith('image/') && accountType === 'simple' && (
+                  <p className="text-xs text-neutral-500 mb-4 text-center">
+                    <Wand2 className="w-3 h-3 inline mr-1" />
+                    AI will analyze the image content to suggest a descriptive name
+                  </p>
+                )}
+                <div className="flex justify-end gap-3">
+                  <button type="button" onClick={() => setRenameFile(null)} className="px-5 py-2.5 text-neutral-400 hover:text-white hover:bg-white/5 rounded-xl transition-colors font-medium">Cancel</button>
+                  <button type="submit" disabled={!renameValue.trim() || renameValue === renameFile.name} className="px-5 py-2.5 bg-[#5A62FB] text-white hover:bg-[#4d54d6] disabled:opacity-50 rounded-xl transition-colors font-medium shadow-sm">Save</button>
+                </div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── OCR Text Extraction Modal ── */}
+      <AnimatePresence>
+        {ocrFile && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[200] p-4">
+            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }} className="bg-[#1A1D27] rounded-3xl p-4 sm:p-6 w-full max-w-lg shadow-2xl border border-white/5 max-h-[85vh] flex flex-col">
+              <div className="flex justify-between items-center mb-4 flex-shrink-0">
+                <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                  <Type className="w-5 h-5 text-emerald-400" />
+                  Extract Text
+                </h2>
+                <button onClick={() => { setOcrFile(null); setOcrText('') }} className="p-2 text-neutral-400 hover:text-white hover:bg-white/10 rounded-xl transition-colors"><X className="w-5 h-5" /></button>
+              </div>
+              <p className="text-sm text-neutral-400 mb-4 flex-shrink-0">
+                Extracting text from <strong className="text-white">{ocrFile.name}</strong>
+              </p>
+              {isExtracting ? (
+                <div className="flex flex-col items-center justify-center py-12">
+                  <div className="relative mb-6">
+                    <div className="w-16 h-16 border-4 border-emerald-500/20 rounded-full" />
+                    <div className="absolute inset-0 w-16 h-16 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                  </div>
+                  <p className="text-neutral-400 text-sm">Analyzing image with OCR...</p>
+                  <p className="text-neutral-500 text-xs mt-1">This may take a few seconds</p>
+                </div>
+              ) : (
+                <div className="flex flex-col flex-1 min-h-0">
+                  <div className="flex-1 overflow-y-auto bg-[#0A0D14] rounded-xl p-4 mb-4 border border-white/5">
+                    <pre className="text-sm text-neutral-200 whitespace-pre-wrap font-mono leading-relaxed">{ocrText}</pre>
+                  </div>
+                  <div className="flex gap-3 flex-shrink-0">
+                    <button
+                      onClick={() => { navigator.clipboard.writeText(ocrText); toast.success('Copied to clipboard!') }}
+                      className="flex-1 py-3 bg-emerald-500/10 text-emerald-400 rounded-xl font-medium hover:bg-emerald-500/20 transition-colors flex items-center justify-center gap-2"
+                    >
+                      <Copy className="w-4 h-4" /> Copy Text
+                    </button>
+                    <button
+                      onClick={() => { setOcrFile(null); setOcrText('') }}
+                      className="flex-1 py-3 bg-white/5 text-white rounded-xl font-medium hover:bg-white/10 transition-colors"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              )}
             </motion.div>
           </motion.div>
         )}

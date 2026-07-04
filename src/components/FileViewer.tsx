@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Play, FileText, Download, Video } from 'lucide-react'
+import { X, Play, FileText, Download, Video, Type } from 'lucide-react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
@@ -20,9 +20,10 @@ interface FileViewerProps {
   file: TGFile | null
   onClose: () => void
   onDownload?: (file: TGFile) => void
+  onExtractText?: (file: TGFile) => void
 }
 
-export const FileViewer = ({ file, onClose, onDownload }: FileViewerProps) => {
+export const FileViewer = ({ file, onClose, onDownload, onExtractText }: FileViewerProps) => {
   const { sessionString, apiId, apiHash, userId, accountType } = useAuthStore()
   const [fileUrl, setFileUrl] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -160,6 +161,15 @@ export const FileViewer = ({ file, onClose, onDownload }: FileViewerProps) => {
                 title="Download"
               >
                 <Download className="w-5 h-5" />
+              </button>
+            )}
+            {isImage && fileUrl && onExtractText && (
+              <button
+                onClick={() => onExtractText(file)}
+                className="p-2.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 rounded-full transition-colors"
+                title="Extract Text (OCR)"
+              >
+                <Type className="w-5 h-5" />
               </button>
             )}
             <button

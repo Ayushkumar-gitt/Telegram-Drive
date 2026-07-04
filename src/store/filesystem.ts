@@ -41,6 +41,7 @@ export interface FileSystemState {
   setMetadataChannelId: (id: string, accessHash?: string) => void
   addFolder: (folder: TGFolder) => void
   addFile: (file: TGFile) => void
+  renameFile: (id: string, newName: string) => void
   removeFile: (id: string) => void
   removeFolder: (id: string) => void
   trashFile: (id: string) => void
@@ -82,6 +83,10 @@ export const useFileSystemStore = create<FileSystemState>()(
 
       addFile: (file) => set((state) => ({
         files: [...state.files, file]
+      })),
+
+      renameFile: (id, newName) => set((state) => ({
+        files: state.files.map(f => f.id === id ? { ...f, name: newName } : f)
       })),
 
       removeFile: (id) => set((state) => ({

@@ -1182,6 +1182,177 @@ app.get('/api/simple/stats', requireUser, async (req, res) => {
   }
 })
 
+// ── ──────────────────────────────────────────────────────────────────────
+//  RENAME FILE
+// ── ──────────────────────────────────────────────────────────────────────
+
+app.post('/api/simple/rename/:fileId', requireUser, async (req, res) => {
+  try {
+    const { newName } = req.body ?? {}
+    if (!newName?.trim()) return res.status(400).json({ error: 'newName required' })
+    const db = getPool()
+    const result = await db.query(
+      'UPDATE sc_user_files SET name = $1 WHERE id = $2 AND user_id = $3 RETURNING id',
+      [newName.trim(), req.params.fileId, req.userId]
+    )
+    if (result.rowCount === 0) return res.status(404).json({ error: 'File not found' })
+    return res.json({ success: true, newName: newName.trim() })
+  } catch (err) {
+    console.error('rename error:', err)
+    return res.status(500).json({ error: err.message })
+  }
+})
+
+// ── ──────────────────────────────────────────────────────────────────────
+//  AI SUGGEST FILENAME (Mistral Small — free tier)
+// ── ──────────────────────────────────────────────────────────────────────
+
+app.post('/api/ai/suggest-name', requireUser, async (req, res) => {
+  try {
+    const { fileName, mimeType, fileSize } = req.body ?? {}
+    if (!fileName) return res.status(400).json({ error: 'fileName required' })
+
+    const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY
+    if (!MISTRAL_API_KEY) {
+      return res.status(500).json({ error: 'MISTRAL_API_KEY not configured on server' })
+    }
+
+    const ext = fileName.includes('.') ? '.' + fileName.split('.').pop() : ''
+
+    const prompt = `You are a file naming assistant. Given the original filename and metadata, suggest a clean, descriptive, human-readable filename.
+
+Rules:
+- Keep the same file extension (${ext})
+- Use PascalCase or snake_case (match what feels natural)
+- Be concise but descriptive (max 60 chars including extension)
+- If the original name is already clean and descriptive, return it as-is
+- Do NOT add dates unless the original name had one
+- Do NOT wrap in quotes or add explanation
+- Return ONLY the suggested filename, nothing else
+
+Original filename: ${fileName}
+MIME type: ${mimeType || 'unknown'}
+File size: ${fileSize ? (fileSize / 1024 / 1024).toFixed(1) + ' MB' : 'unknown'}
+
+Suggested filename:`
+
+    const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${MISTRAL_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: 'mistral-small-latest',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 100,
+        temperature: 0.3,
+      }),
+    })
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}))
+      throw new Error(errData.message || `Mistral API error: ${response.status}`)
+    }
+
+    const data = await response.json()
+    const suggestedName = (data.choices?.[0]?.message?.content || '').trim().replace(/^["']|["']$/g, '')
+
+    return res.json({ suggestedName })
+  } catch (err) {
+    console.error('ai suggest-name error:', err)
+    return res.status(500).json({ error: err.message ?? 'AI suggestion failed' })
+  }
+})
+
+// ── ──────────────────────────────────────────────────────────────────────
+//  AI SUGGEST FILENAME FROM IMAGE (Pixtral 12B — free tier, vision model)
+// ── ──────────────────────────────────────────────────────────────────────
+
+app.post('/api/ai/suggest-name-from-image', requireUser, async (req, res) => {
+  try {
+    const { fileId, fileName } = req.body ?? {}
+    if (!fileId || !fileName) return res.status(400).json({ error: 'fileId and fileName required' })
+
+    const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY
+    if (!MISTRAL_API_KEY) {
+      return res.status(500).json({ error: 'MISTRAL_API_KEY not configured on server' })
+    }
+
+    const db = getPool()
+    const fileRes = await db.query(
+      'SELECT * FROM sc_user_files WHERE id = $1 AND user_id = $2',
+      [fileId, req.userId]
+    )
+    if (fileRes.rows.length === 0) return res.status(404).json({ error: 'File not found' })
+
+    const file = fileRes.rows[0]
+
+    // Download image from Telegram for analysis
+    const client = await getTgClient()
+    const peer = new Api.InputPeerChannel({
+      channelId: BigInt(file.channel_id.replace('-100', '')),
+      accessHash: BigInt(file.access_hash ?? '0'),
+    })
+    const msgs = await client.getMessages(peer, { ids: [file.message_id] })
+    if (!msgs?.length || !msgs[0]?.media) return res.status(404).json({ error: 'Media not found' })
+
+    // Download thumbnail (small) for fast AI analysis
+    const buffer = await client.downloadMedia(msgs[0], { thumb: 0 })
+    if (!buffer) return res.status(500).json({ error: 'Could not download image for analysis' })
+
+    const base64Image = Buffer.from(buffer).toString('base64')
+    const imgMimeType = file.mime_type || 'image/jpeg'
+    const ext = fileName.includes('.') ? '.' + fileName.split('.').pop() : '.jpg'
+
+    const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${MISTRAL_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: 'pixtral-12b-2409',
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'image_url',
+              image_url: { url: `data:${imgMimeType};base64,${base64Image}` },
+            },
+            {
+              type: 'text',
+              text: `Look at this image and suggest a clean, descriptive filename for it.
+
+Rules:
+- Keep the extension ${ext}
+- Use snake_case
+- Be concise but descriptive (max 50 chars including extension)
+- Describe what's IN the image (e.g. sunset_beach_palm_trees${ext}, cat_sleeping_on_couch${ext})
+- Return ONLY the suggested filename, nothing else, no quotes`,
+            },
+          ],
+        }],
+        max_tokens: 100,
+        temperature: 0.3,
+      }),
+    })
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}))
+      throw new Error(errData.message || `Mistral API error: ${response.status}`)
+    }
+
+    const data = await response.json()
+    const suggestedName = (data.choices?.[0]?.message?.content || '').trim().replace(/^["']|["']$/g, '')
+
+    return res.json({ suggestedName })
+  } catch (err) {
+    console.error('ai suggest-name-from-image error:', err)
+    return res.status(500).json({ error: err.message ?? 'AI image analysis failed' })
+  }
+})
+
 // Static files (JS, CSS, images)
 app.use(express.static(DIST))
 

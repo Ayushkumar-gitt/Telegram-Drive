@@ -305,3 +305,43 @@ export async function apiGetStats(userId: string) {
     recentFiles: any[]
   }>
 }
+
+// ── Rename ────────────────────────────────────────────────────────────────
+
+export async function apiRenameFile(userId: string, fileId: string, newName: string) {
+  const res = await fetch(`${API_BASE}/api/simple/rename/${fileId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders(userId) },
+    body: JSON.stringify({ newName }),
+  })
+  if (!res.ok) throw new Error('Failed to rename file')
+  return res.json() as Promise<{ success: boolean; newName: string }>
+}
+
+// ── AI Suggest Filename ──────────────────────────────────────────────────
+
+export async function apiSuggestName(userId: string, fileName: string, mimeType: string, fileSize: number) {
+  const res = await fetch(`${API_BASE}/api/ai/suggest-name`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders(userId) },
+    body: JSON.stringify({ fileName, mimeType, fileSize }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: 'AI suggestion failed' }))
+    throw new Error(data.error ?? 'AI suggestion failed')
+  }
+  return res.json() as Promise<{ suggestedName: string }>
+}
+
+export async function apiSuggestNameFromImage(userId: string, fileId: string, fileName: string) {
+  const res = await fetch(`${API_BASE}/api/ai/suggest-name-from-image`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders(userId) },
+    body: JSON.stringify({ fileId, fileName }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: 'AI image analysis failed' }))
+    throw new Error(data.error ?? 'AI image analysis failed')
+  }
+  return res.json() as Promise<{ suggestedName: string }>
+}
